@@ -13,78 +13,9 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Complete Shared SQL Query Generator
+// Updated Shared SQL Query Generator pointing directly to your Supabase view
 const getBuildingPermitQuery = () => `
-  SELECT 
-      -- 1. APPLICANT DETAILS (person table)
-      p_applicant.person_id AS applicant_id,
-      p_applicant.full_name AS applicant_full_name,
-      p_applicant.nui AS applicant_nui,
-      p_applicant.phone AS applicant_phone,
-      p_applicant.email AS applicant_email,
-      p_applicant.address AS applicant_address,
-      p_applicant.sex AS applicant_sex,
-      
-      -- 2. PARCEL DETAILS (parcel table)
-      pa.parcel_id,
-      pa.plot_no,
-      pa.arrondissement AS parcel_arrondissement,
-      pa.quarter AS parcel_quarter,
-      pa.area_sq_m AS parcel_area_sq_m,
-      pa.cadastral_area,
-      
-      -- Transform parcel geometry from UTM 32N (32632) to WGS84 (4326) for Leaflet
-      ST_AsGeoJSON(ST_Transform(pa.geom, 4326))::json AS parcel_geom,
-      pa.calculated_area AS parcel_calculated_area,
-      
-      -- 3. PARCEL OWNER DETAILS (person table)
-      p_owner.person_id AS owner_id,
-      p_owner.full_name AS owner_full_name,
-      p_owner.nui AS owner_nui,
-      p_owner.phone AS owner_phone,
-      p_owner.email AS owner_email,
-      p_owner.address AS owner_address,
-      p_owner.sex AS owner_sex,
-
-      -- 4. BUILDING PERMIT DETAILS (building_permits table)
-      bp.permit_id,
-      bp.permit_number,
-      bp.Floors_above_ground AS floors_above_ground,
-      bp.floors_underground,
-      bp.building_use,
-      bp.parking_place,
-      bp.height_M AS height_m,
-      bp.area_sq_m AS building_area_sq_m,
-      bp.building_cost,
-      bp.issue_date,
-      bp.expiry_date,
-      bp.COS AS cos,
-      bp.CES AS ces,
-      bp.setback_front,
-      bp.setback_boundary,
-      bp.estimated_cost,
-      bp.title_rec_no,
-      bp.status AS permit_status,  -- Essential for frontend status color badges
-      bp.input_database_date,
-      
-      -- Transform building geometry from UTM 32N (32632) to WGS84 (4326) for Leaflet
-      ST_AsGeoJSON(ST_Transform(bp.geom, 4326))::json AS building_geom,
-      bp.calculated_area AS building_calculated_area,
-      
-      -- 5. COMBINED GEOMETRY (Collected and transformed for Leaflet)
-      ST_AsGeoJSON(ST_Transform(ST_Collect(pa.geom, bp.geom), 4326))::json AS parcel_and_building_geom,
-
-      -- 6. SPATIAL RELATIONSHIP CHECKS
-      ST_Intersects(bp.geom, pa.geom) AS building_intersects_parcel,
-      ST_Contains(pa.geom, bp.geom) AS building_fully_contained_in_parcel
-
-  FROM building_permit bp
-  LEFT JOIN person p_applicant 
-      ON bp.applicant_id = p_applicant.person_id
-  LEFT JOIN parcel pa 
-      ON bp.parcel_id = pa.parcel_id  -- Safe ID-only join ensures parcel info & geom always load
-  LEFT JOIN person p_owner 
-      ON pa.owned_by = p_owner.person_id;
+  SELECT * FROM v_building_permit;
 `;
 
 // Smart Local / Cloud Fallback Database Endpoint
