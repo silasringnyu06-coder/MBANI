@@ -363,6 +363,37 @@ function closeModal() {
   if (detailModal) detailModal.style.display = 'none';
 }
 
+// 6. Toggle Buttons UI Logic for Switching Search Bars
+const togglePermitBtn = document.getElementById('togglePermitBtn');
+const toggleTrackerBtn = document.getElementById('toggleTrackerBtn');
+const permitSearchBox = document.getElementById('permitSearchBox');
+const trackerSearchBox = document.getElementById('trackerSearchBox');
+
+if (togglePermitBtn && toggleTrackerBtn) {
+  togglePermitBtn.addEventListener('click', () => {
+    permitSearchBox.style.display = 'block';
+    trackerSearchBox.style.display = 'none';
+    
+    togglePermitBtn.style.background = '#0f172a';
+    togglePermitBtn.style.color = 'white';
+    
+    toggleTrackerBtn.style.background = '#e2e8f0';
+    toggleTrackerBtn.style.color = '#333';
+  });
+
+  toggleTrackerBtn.addEventListener('click', () => {
+    trackerSearchBox.style.display = 'block';
+    permitSearchBox.style.display = 'none';
+    
+    toggleTrackerBtn.style.background = '#2563eb';
+    toggleTrackerBtn.style.color = 'white';
+    
+    togglePermitBtn.style.background = '#e2e8f0';
+    togglePermitBtn.style.color = '#333';
+  });
+}
+
+// General Search Input Handler
 const searchInput = document.getElementById('search-input');
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {
@@ -378,20 +409,71 @@ if (searchInput) {
   });
 }
 
+// GPS Tracker & Distance Calculation Search Handler
 const trackSearchInput = document.getElementById('track-search-input');
+let trackingLayerGroup = L.layerGroup().addTo(map);
+
 if (trackSearchInput) {
-  trackSearchInput.addEventListener('input', (e) => {
-    const query = e.target.value.trim().toLowerCase();
-    if (!query) return;
+  trackSearchInput.addEventListener('keypress', async function (e) {
+    if (e.key === 'Enter') {
+      const query = e.target.value.trim().toLowerCase();
+      if (!query) return;
 
-    const matchedRecord = globalPermitData.find(r => 
-      (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
-      (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query))
-    );
+      trackingLayerGroup.clearLayers();
 
-    if (matchedRecord) {
-      const key = matchedRecord.permit_id || matchedRecord.permit_number;
-      focusOnPermit(key);
+      const matchedRecord = globalPermitData.find(r => 
+        (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
+        (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query))
+      );
+
+      if (!matchedRecord) {
+        alert("No matching permit or house found!");
+        return;
+      }
+
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser");
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(async (position) => {
+        const userLat = position.coords.latitude;
+        const userLng = position.coords.longitude;
+
+        const userMarker = L.marker([userLat, userLng]).bindPopup("📍 You are here");
+        trackingLayerGroup.addLayer(userMarker);
+
+        const key = matchedRecord.permit_id || matchedRecord.permit_number;
+        const layerGroup = layersMap[key];
+        
+        if (layerGroup) {
+          // Get bounds center of the target permit geometry as destination point
+          const bounds = layerGroup.getBounds();
+          const houseLatLng = bounds.getCenter();
+
+          const userLatLng = L.latLng(userLat, userLng);
+          const distanceMeters = userLatLng.distanceTo(houseLatLng);
+
+          let distText = `${Math.round(distanceMeters)} meters`;
+          if (distanceMeters >= 1000) {
+              distText = `${(distanceMeters / 1000).toFixed(2)} km`;
+          }
+
+          // Draw dashed navigation line from current GPS location to property
+          const line = L.polyline([userLatLng, houseLatLng], {
+              color: '#2563eb',
+              weight: 4,
+              dashArray: '6, 6'
+          }).bindPopup(`<b>Target: ${matchedRecord.applicant_full_name || 'House'}</b><br>Distance: ${distText}`);
+          trackingLayerGroup.addLayer(line);
+
+          map.fitBounds(line.getBounds(), { padding: [50, 50], maxZoom: 18 });
+          line.openPopup();
+        }
+      }, (error) => {
+        alert("Unable to retrieve your GPS location. Please check phone settings.");
+        console.error(error);
+      });
     }
   });
 }

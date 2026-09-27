@@ -15,12 +15,12 @@
     
     .container { display: flex; flex-direction: column; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
     
-    .search-container { display: flex; gap: 15px; }
-    @media (max-width: 768px) {
-      .search-container { flex-direction: column; }
-    }
-
-    .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; }
+    /* Mode Toggle & Search Styles */
+    .mode-selector { display: flex; gap: 10px; }
+    .mode-btn { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
+    
+    .search-section { width: 100%; }
+    .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; box-sizing: border-box; }
     .search-box:focus { border-color: #1e293b; }
     
     #track-search-input { border-left: 4px solid #2563eb; }
@@ -75,9 +75,20 @@
   </header>
 
   <div class="container">
-    <div class="search-container">
+    <!-- Mode Selection Toggle Buttons -->
+    <div class="mode-selector">
+      <button id="togglePermitBtn" class="mode-btn" style="background: #0f172a; color: white;">📋 Permit & Parcel Search</button>
+      <button id="toggleTrackerBtn" class="mode-btn" style="background: #e2e8f0; color: #333;">📍 GPS House Tracker</button>
+    </div>
+
+    <!-- Search Section 1: General Permit & Parcel Filter -->
+    <div id="permitSearchBox" class="search-section">
       <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant, Land Title..." />
-      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to zoom directly..." />
+    </div>
+
+    <!-- Search Section 2: GPS Tracker & Distance Calculation (Hidden by default) -->
+    <div id="trackerSearchBox" class="search-section" style="display: none;">
+      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
     <div class="map-wrapper">
@@ -98,7 +109,7 @@
           </tr>
         </thead>
         <tbody id="permit-table-body">
-          <tr><td colspan="7" style="text-align:center;">Loading building permit data from database...</td></tr>
+          <tr><td colspan="6" style="text-align:center;">Loading building permit data from database...</td></tr>
         </tbody>
       </table>
     </div>
