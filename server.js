@@ -19,7 +19,7 @@ const getBuildingPermitQuery = () => `
       -- 1. APPLICANT DETAILS (person table)
       p_applicant.person_id AS applicant_id,
       p_applicant.full_name AS applicant_full_name,
-      p_applicant.NUI AS applicant_niu,
+      p_applicant.nui AS applicant_nui,
       p_applicant.phone AS applicant_phone,
       p_applicant.email AS applicant_email,
       p_applicant.address AS applicant_address,
@@ -40,7 +40,7 @@ const getBuildingPermitQuery = () => `
       -- 3. PARCEL OWNER DETAILS (person table)
       p_owner.person_id AS owner_id,
       p_owner.full_name AS owner_full_name,
-      p_owner.NUI AS owner_nui,
+      p_owner.nui AS owner_nui,
       p_owner.phone AS owner_phone,
       p_owner.email AS owner_email,
       p_owner.address AS owner_address,
@@ -144,7 +144,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
       CREATE TABLE IF NOT EXISTS person (
         person_id SERIAL PRIMARY KEY,
         full_name VARCHAR(50),
-        "NUI" VARCHAR(80),
+        nui VARCHAR(80),
         phone INTEGER,
         email VARCHAR(50),
         address VARCHAR(255),
@@ -211,9 +211,9 @@ app.get('/api/migrate-data', async (req, res) => {
     let personCount = 0;
     for (let row of localPersons.rows) {
       await db.cloudQuery(
-        `INSERT INTO person (person_id, full_name, "NUI", phone, email, address, sex) 
+        `INSERT INTO person (person_id, full_name, nui, phone, email, address, sex) 
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (person_id) DO NOTHING;`,
-        [row.person_id, row.full_name, row.NUI, row.phone, row.email, row.address, row.sex]
+        [row.person_id, row.full_name, row.nui, row.phone, row.email, row.address, row.sex]
       );
       personCount++;
     }
