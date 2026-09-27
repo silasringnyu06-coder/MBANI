@@ -87,14 +87,21 @@ const getBuildingPermitQuery = () => `
       ON pa.owned_by = p_owner.person_id;
 `;
 
-// Local Database Endpoint
+// Smart Local / Cloud Fallback Database Endpoint
 app.get('/api/building-permit', async (req, res) => {
   try {
+    // Tries local database first (for your local laptop testing)
     const result = await db.localQuery(getBuildingPermitQuery());
     res.status(200).json(result.rows);
-  } catch (err) {
-    console.error('Local Database Query Error:', err.message);
-    res.status(500).json({ error: 'Server error fetching local building permit' });
+  } catch (localErr) {
+    // Automatically falls back to Supabase Cloud when local isn't available (e.g., on Render)
+    try {
+      const cloudResult = await db.cloudQuery(getBuildingPermitQuery());
+      res.status(200).json(cloudResult.rows);
+    } catch (cloudErr) {
+      console.error('Both Local and Cloud Query Error:', localErr.message, cloudErr.message);
+      res.status(500).json({ error: 'Server error fetching building permit from both databases' });
+    }
   }
 });
 
