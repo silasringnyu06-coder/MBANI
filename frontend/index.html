@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Building Permits Dashboard</title>
+  <title>Building Permit Dashboard - MBANI WebGIS</title>
   
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 
@@ -15,70 +15,100 @@
     
     .container { display: flex; flex-direction: column; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
     
-    /* Search Bar */
-    .search-box { width: 100%; padding: 10px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; }
+    .search-container { display: flex; gap: 15px; }
+    @media (max-width: 768px) {
+      .search-container { flex-direction: column; }
+    }
 
-    /* Map Container */
-    #map { height: 400px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+    .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; }
+    .search-box:focus { border-color: #1e293b; }
     
-    /* Table Styling */
-    .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+    #track-search-input { border-left: 4px solid #2563eb; }
+
+    .map-wrapper { position: relative; }
+    #map { height: 480px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+    
+    .coord-banner {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      z-index: 1000;
+      background: rgba(15, 23, 42, 0.85);
+      color: #fff;
+      padding: 6px 12px;
+      font-size: 12px;
+      border-radius: 4px;
+      font-family: monospace;
+      pointer-events: none;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+    }
+    
+    .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); max-height: 400px; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
-    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; }
+    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; }
     tr:nth-child(even) { background-color: #f8fafc; }
     tr:hover { background-color: #e2e8f0; cursor: pointer; }
     
-    .status-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; background: #e2e8f0; }
+    .status-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; display: inline-block; }
+    .status-approved { background: #dcfce7; color: #166534; }
+    .status-pending { background: #fef9c3; color: #854d0e; }
+    .status-rejected { background: #fee2e2; color: #991b1b; }
 
-    /* Modal Overlay for Detailed Info */
-    .modal { display: none; position: fixed; z-index: 1000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
-    .modal-content { background: #fff; width: 90%; max-width: 700px; border-radius: 8px; padding: 20px; max-height: 85vh; overflow-y: auto; position: relative; }
-    .close-btn { position: absolute; right: 15px; top: 10px; font-size: 22px; cursor: pointer; font-weight: bold; }
-    .details-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 15px; }
-    .details-section { grid-column: span 2; font-weight: bold; font-size: 16px; margin-top: 10px; border-bottom: 2px solid #0f172a; padding-bottom: 4px; color: #0f172a; }
+    .btn-details { background: #0f172a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    .btn-details:hover { background: #334155; }
+
+    .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
+    .modal-content { background: #fff; width: 92%; max-width: 850px; border-radius: 8px; padding: 25px; max-height: 88vh; overflow-y: auto; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
+    .close-btn { position: absolute; right: 20px; top: 15px; font-size: 24px; cursor: pointer; font-weight: bold; color: #64748b; }
+    .close-btn:hover { color: #0f172a; }
+    
+    .details-item { background: #f8fafc; padding: 10px; border-radius: 6px; font-size: 14px; border: 1px solid #e2e8f0; }
+    .details-item span { display: block; font-size: 12px; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }
+    .details-section { grid-column: span 2; font-weight: bold; font-size: 16px; margin-top: 15px; border-bottom: 2px solid #0f172a; padding-bottom: 4px; color: #0f172a; }
   </style>
 </head>
 <body>
 
   <header>
-    <h1>MBANI WebGIS - Building Permits Dashboard</h1>
+    <h1>MBANI WebGIS - Building Permit & Land Administration Dashboard</h1>
   </header>
 
   <div class="container">
-    <!-- Instant Search Bar -->
-    <input type="text" id="search-input" class="search-box" placeholder="Search by Applicant Name, Permit No, Land Title, or NIU..." />
+    <div class="search-container">
+      <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant, Land Title..." />
+      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to zoom directly..." />
+    </div>
 
-    <!-- Map Element -->
-    <div id="map"></div>
+    <div class="map-wrapper">
+      <div id="map"></div>
+      <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
+    </div>
 
-    <!-- Data Table Element -->
     <div class="table-container">
       <table>
         <thead>
           <tr>
             <th>Permit No</th>
             <th>Applicant</th>
+            <th>Email</th>
             <th>Phone</th>
             <th>Status</th>
-            <th>Building Use</th>
-            <th>Floors</th>
-            <th>Action</th>
+            <th>nui</th>
           </tr>
         </thead>
-        <tbody id="permits-table-body">
-          <tr><td colspan="7" style="text-align:center;">Loading permit data...</td></tr>
+        <tbody id="permit-table-body">
+          <tr><td colspan="7" style="text-align:center;">Loading building permit data from database...</td></tr>
         </tbody>
       </table>
     </div>
   </div>
 
-  <!-- Detail Pop-Up Modal -->
   <div id="detail-modal" class="modal">
     <div class="modal-content">
       <span class="close-btn" onclick="closeModal()">&times;</span>
-      <h2 id="modal-title">Permit Details</h2>
-      <div id="modal-body" class="details-grid"></div>
+      <h2 id="modal-title" style="margin-bottom:15px; color:#0f172a;">Building Permit & Spatial Details</h2>
+      <div id="modal-body" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
     </div>
   </div>
 
