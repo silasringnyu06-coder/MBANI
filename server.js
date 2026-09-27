@@ -13,12 +13,11 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Updated Shared SQL Query Generator performing direct table joins (No database view required)
+// Updated Shared SQL Query Generator (Fixed: removed nui column reference)
 const getBuildingPermitQuery = () => `
   SELECT 
       p_applicant.person_id AS applicant_id,
       p_applicant.full_name AS applicant_full_name,
-      p_applicant.nui AS applicant_nui,
       p_applicant.phone AS applicant_phone,
       p_applicant.email AS applicant_email,
       p_applicant.address AS applicant_address,
@@ -35,7 +34,6 @@ const getBuildingPermitQuery = () => `
       
       p_owner.person_id AS owner_id,
       p_owner.full_name AS owner_full_name,
-      p_owner.nui AS owner_nui,
       p_owner.phone AS owner_phone,
       p_owner.email AS owner_email,
       p_owner.address AS owner_address,
