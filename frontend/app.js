@@ -409,9 +409,10 @@ if (searchInput) {
   });
 }
 
-// GPS Tracker & Distance Calculation Search Handler
+// GPS Tracker & Road-Following Routing Search Handler (Yango style)
 const trackSearchInput = document.getElementById('track-search-input');
 let trackingLayerGroup = L.layerGroup().addTo(map);
+let currentRoutingControl = null;
 
 if (trackSearchInput) {
   trackSearchInput.addEventListener('keypress', async function (e) {
@@ -419,7 +420,12 @@ if (trackSearchInput) {
       const query = e.target.value.trim().toLowerCase();
       if (!query) return;
 
+      // Clear previous routes/markers
       trackingLayerGroup.clearLayers();
+      if (currentRoutingControl) {
+        map.removeControl(currentRoutingControl);
+        currentRoutingControl = null;
+      }
 
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
@@ -447,28 +453,25 @@ if (trackSearchInput) {
         const layerGroup = layersMap[key];
         
         if (layerGroup) {
-          // Get bounds center of the target permit geometry as destination point
+          // Get bounds center of the target permit geometry as parcel/house destination point
           const bounds = layerGroup.getBounds();
-          const houseLatLng = bounds.getCenter();
+          const targetLatLng = bounds.getCenter();
 
-          const userLatLng = L.latLng(userLat, userLng);
-          const distanceMeters = userLatLng.distanceTo(houseLatLng);
+          // Initialize Leaflet Routing Machine to trace streets like Yango
+          currentRoutingControl = L.Routing.control({
+            waypoints: [
+              L.latLng(userLat, userLng),     // Starting point: Live user GPS
+              L.latLng(targetLatLng.lat, targetLatLng.lng) // Destination: Parcel/House center
+            ],
+            routeWhileDragging: false,
+            lineOptions: {
+              styles: [{ color: '#2563eb', weight: 6, opacity: 0.8 }]
+            },
+            show: true, // Displays turn-by-turn text box instructions
+            addWaypoints: false
+          }).addTo(map);
 
-          let distText = `${Math.round(distanceMeters)} meters`;
-          if (distanceMeters >= 1000) {
-              distText = `${(distanceMeters / 1000).toFixed(2)} km`;
-          }
-
-          // Draw dashed navigation line from current GPS location to property
-          const line = L.polyline([userLatLng, houseLatLng], {
-              color: '#2563eb',
-              weight: 4,
-              dashArray: '6, 6'
-          }).bindPopup(`<b>Target: ${matchedRecord.applicant_full_name || 'House'}</b><br>Distance: ${distText}`);
-          trackingLayerGroup.addLayer(line);
-
-          map.fitBounds(line.getBounds(), { padding: [50, 50], maxZoom: 18 });
-          line.openPopup();
+          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
         }
       }, (error) => {
         alert("Unable to retrieve your GPS location. Please check phone settings.");
