@@ -18,7 +18,7 @@ const getBuildingPermitQuery = () => `
   SELECT * FROM v_building_permit;
 `;
 
-// Smart Local / Cloud Fallback Database Endpoint
+// Smart Local / Cloud Fallback Database Endpoint with Detailed Error Reporting
 app.get('/api/building-permit', async (req, res) => {
   try {
     // Tries local database first (for your local laptop testing)
@@ -31,7 +31,11 @@ app.get('/api/building-permit', async (req, res) => {
       res.status(200).json(cloudResult.rows);
     } catch (cloudErr) {
       console.error('Both Local and Cloud Query Error:', localErr.message, cloudErr.message);
-      res.status(500).json({ error: 'Server error fetching building permit from both databases' });
+      res.status(500).json({ 
+        error: 'Server error fetching building permit from both databases',
+        localError: localErr.message,
+        cloudError: cloudErr.message
+      });
     }
   }
 });
@@ -43,7 +47,7 @@ app.get('/api/cloud-building-permit', async (req, res) => {
     res.status(200).json(result.rows);
   } catch (err) {
     console.error('Cloud Database Query Error:', err.message);
-    res.status(500).json({ error: 'Server error fetching cloud building permit' });
+    res.status(500).json({ error: 'Server error fetching cloud building permit', details: err.message });
   }
 });
 
@@ -67,7 +71,7 @@ app.post('/api/sync-building-permit', async (req, res) => {
     });
   } catch (err) {
     console.error('Database Sync Insertion Error:', err);
-    res.status(500).json({ error: 'Failed to sync and insert record across databases' });
+    res.status(500).json({ error: 'Failed to sync and insert record across databases', details: err.message });
   }
 });
 
