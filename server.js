@@ -137,7 +137,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
       CREATE TABLE IF NOT EXISTS person (
         person_id SERIAL PRIMARY KEY,
         full_name VARCHAR(50),
-        NUI VARCHAR(80),
+        nui VARCHAR(80),
         phone INTEGER,
         email VARCHAR(50),
         address VARCHAR(255),
@@ -201,7 +201,7 @@ app.get('/api/migrate-data', async (req, res) => {
     let personCount = 0;
     for (let row of localPersons.rows) {
       await db.cloudQuery(
-        `INSERT INTO person (person_id, full_name, NUI, phone, email, address, sex) 
+        `INSERT INTO person (person_id, full_name, nui, phone, email, address, sex) 
          VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (person_id) DO NOTHING;`,
         [row.person_id, row.full_name, row.NUI, row.phone, row.email, row.address, row.sex]
       );
@@ -223,8 +223,8 @@ app.get('/api/migrate-data', async (req, res) => {
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, Floors_above_ground, floors_underground, building_use, parking_place, height_M, area_sq_m, building_cost, issue_date, expiry_date, COS, CES, setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (permit_id) DO NOTHING;`,
+        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, floors_above_ground, floors_underground, building_use, parking_place, height_M, area_sq_m, building_cost, issue_date, expiry_date, COS, CES, setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) ON CONFLICT (permit_id) DO NOTHING;`,
         [
           row.permit_id, row.permit_number, row.applicant_id, row.parcel_id, 
           row.Floors_above_ground, row.floors_underground, row.building_use, 
@@ -254,10 +254,10 @@ app.get('/api/pull-cloud-data', async (req, res) => {
     let personCount = 0;
     for (let row of cloudPersons.rows) {
       await db.localQuery(
-        `INSERT INTO person (person_id, full_name, "NUI", phone, email, address, sex) 
+        `INSERT INTO person (person_id, full_name, nui, phone, email, address, sex) 
          VALUES ($1, $2, $3, $4, $5, $6, $7) 
          ON CONFLICT (person_id) DO UPDATE SET
-           full_name = EXCLUDED.full_name, "NUI" = EXCLUDED."NUI", phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address, sex = EXCLUDED.sex;`,
+           full_name = EXCLUDED.full_name, nui = EXCLUDED.nui, phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address, sex = EXCLUDED.sex;`,
         [row.person_id, row.full_name, row.NUI, row.phone, row.email, row.address, row.sex]
       );
       personCount++;
@@ -311,10 +311,10 @@ app.get('/api/push-local-data', async (req, res) => {
     let personCount = 0;
     for (let row of localPersons.rows) {
       await db.cloudQuery(
-        `INSERT INTO person (person_id, full_name, "NUI", phone, email, address, sex) 
+        `INSERT INTO person (person_id, full_name, nui, phone, email, address, sex) 
          VALUES ($1, $2, $3, $4, $5, $6, $7) 
          ON CONFLICT (person_id) DO UPDATE SET
-           full_name = EXCLUDED.full_name, "NUI" = EXCLUDED."NUI", phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address, sex = EXCLUDED.sex;`,
+           full_name = EXCLUDED.full_name, nui = EXCLUDED.nui, phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address, sex = EXCLUDED.sex;`,
         [row.person_id, row.full_name, row.nui, row.phone, row.email, row.address, row.sex]
       );
       personCount++;
@@ -337,8 +337,8 @@ app.get('/api/push-local-data', async (req, res) => {
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, "Floors_above_ground", floors_underground, building_use, parking_place, "height_M", area_sq_m, building_cost, issue_date, expiry_date, "COS", "CES", setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) 
+        `INSERT INTO building_permit (permit_id, permit_number, nui, applicant_id, parcel_id, "Floors_above_ground", floors_underground, building_use, parking_place, "height_M", area_sq_m, building_cost, issue_date, expiry_date, "COS", "CES", setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24) 
          ON CONFLICT (permit_id) DO UPDATE SET
            permit_number = EXCLUDED.permit_number, applicant_id = EXCLUDED.applicant_id, parcel_id = EXCLUDED.parcel_id, "Floors_above_ground" = EXCLUDED."Floors_above_ground", floors_underground = EXCLUDED.floors_underground, building_use = EXCLUDED.building_use, parking_place = EXCLUDED.parking_place, "height_M" = EXCLUDED."height_M", area_sq_m = EXCLUDED.area_sq_m, building_cost = EXCLUDED.building_cost, issue_date = EXCLUDED.issue_date, expiry_date = EXCLUDED.expiry_date, "COS" = EXCLUDED."COS", "CES" = EXCLUDED."CES", setback_front = EXCLUDED.setback_front, setback_boundary = EXCLUDED.setback_boundary, estimated_cost = EXCLUDED.estimated_cost, title_rec_no = EXCLUDED.title_rec_no, status = EXCLUDED.status, input_database_date = EXCLUDED.input_database_date, geom = EXCLUDED.geom, calculated_area = EXCLUDED.calculated_area;`,
         [
@@ -350,7 +350,7 @@ app.get('/api/push-local-data', async (req, res) => {
           row.title_rec_no, row.status, row.input_database_date, 
           row.geom, row.calculated_area
         ]
-      );
+      ); 
       permitCount++;
     }
 
