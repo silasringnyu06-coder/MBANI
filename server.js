@@ -41,7 +41,7 @@ const getBuildingPermitQuery = () => `
 
       bp.permit_id,
       bp.permit_number,
-      bp."Floors_above_ground" AS floors_above_ground,
+      bp.floors_above_ground AS floors_above_ground,
       bp.floors_underground,
       bp.building_use,
       bp.parking_place,
@@ -169,7 +169,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
         permit_number VARCHAR(20),
         applicant_id INTEGER REFERENCES person(person_id),
         parcel_id INTEGER REFERENCES parcel(parcel_id),
-        "Floors_above_ground" VARCHAR(50),
+        floors_above_ground VARCHAR(50),
         floors_underground VARCHAR(50),
         building_use VARCHAR(100),
         parking_place VARCHAR(50),
@@ -230,7 +230,7 @@ app.get('/api/migrate-data', async (req, res) => {
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, "Floors_above_ground", floors_underground, building_use, parking_place, "height_M", area_sq_m, building_cost, issue_date, expiry_date, "COS", "CES", setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
+        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, floors_above_ground, floors_underground, building_use, parking_place, "height_M", area_sq_m, building_cost, issue_date, expiry_date, "COS", "CES", setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (permit_id) DO NOTHING;`,
         [
           row.permit_id, row.permit_number, row.applicant_id, row.parcel_id, 
