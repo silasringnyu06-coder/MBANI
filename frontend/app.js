@@ -41,6 +41,10 @@ const geojsonGroup = L.featureGroup().addTo(map);
 let globalPermitData = [];
 const layersMap = {};
 
+// Sorting state trackers
+let currentSortColumn = null;
+let isAscending = true;
+
 // 3. Live Cursor Location Tracker (UTM Zone 32N coordinates)
 map.on('mousemove', function(e) {
   const utmCoords = proj4("EPSG:4326", "EPSG:32632", [e.latlng.lng, e.latlng.lat]);
@@ -49,6 +53,35 @@ map.on('mousemove', function(e) {
     coordDisplay.innerText = `UTM Zone 32N (EPSG:32632) | X: ${utmCoords[0].toFixed(2)} m E | Y: ${utmCoords[1].toFixed(2)} m N`;
   }
 });
+
+/**
+ * Table Sorting Helper Function (Ascending / Descending)
+ */
+function sortTableBy(columnKey) {
+  if (currentSortColumn === columnKey) {
+    isAscending = !isAscending;
+  } else {
+    currentSortColumn = columnKey;
+    isAscending = true;
+  }
+
+  globalPermitData.sort((a, b) => {
+    let valA = (a[columnKey] || '').toString().toLowerCase();
+    let valB = (b[columnKey] || '').toString().toLowerCase();
+
+    // Numeric comparison if values are numbers
+    if (!isNaN(valA) && !isNaN(valB) && valA !== '' && valB !== '') {
+      valA = parseFloat(valA);
+      valB = parseFloat(valB);
+    }
+
+    if (valA < valB) return isAscending ? -1 : 1;
+    if (valA > valB) return isAscending ? 1 : -1;
+    return 0;
+  });
+
+  renderTableAndMap(globalPermitData);
+}
 
 /**
  * Since server coordinates are stored/returned as WGS84 (EPSG:4326) [lng, lat],
@@ -183,7 +216,7 @@ function renderTableAndMap(data) {
       <td>${record.applicant_full_name || 'N/A'}</td>
       <td>${record.applicant_email || 'N/A'}</td>
       <td>${record.applicant_phone_number || record.applicant_phone || 'N/A'}</td>
-      <td><span class="${badgeClass}">${record.status || record.permit_status || 'N/A'}</span></td>
+      <td>${record.parcel_arrondissement || 'N/A'}</td>
       <td>${record.building_use || 'N/A'}</td>
       <td><button class="btn-details" onclick="event.stopPropagation(); showDetails(${idx})">View All</button></td>
     `;
@@ -403,6 +436,8 @@ if (searchInput) {
       (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
       (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
       (r.title_rec_no && r.title_rec_no.toLowerCase().includes(query)) ||
+      (r.applicant_arrondissement && r.applicant_arrondissement.toLowerCase().includes(query)) ||
+      (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query)) ||
       (r.applicant_nui && r.applicant_nui.toLowerCase().includes(query))
     );
     renderTableAndMap(filtered);
@@ -429,7 +464,9 @@ if (trackSearchInput) {
 
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
-        (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query))
+        (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
+        (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
+        (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query))
       );
 
       if (!matchedRecord) {
