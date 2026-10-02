@@ -235,7 +235,7 @@ app.get('/api/migrate-data', async (req, res) => {
         [
           row.permit_id, row.permit_number, row.applicant_id, row.parcel_id, 
           row.Floors_above_ground, row.floors_underground, row.building_use, 
-          row.parking_place, row.height_M, row.area_sq_m, row.building_cost, 
+          row.parking_place, row.height_m, row.area_sq_m, row.building_cost, 
           row.issue_date, row.expiry_date, row.COS, row.CES, 
           row.setback_front, row.setback_boundary, row.estimated_cost, 
           row.title_rec_no, row.status, row.input_database_date, 
