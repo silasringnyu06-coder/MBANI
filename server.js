@@ -50,8 +50,8 @@ const getBuildingPermitQuery = () => `
       bp.building_cost,
       bp.issue_date,
       bp.expiry_date,
-      bp."COS" AS cos,
-      bp."CES" AS ces,
+      bp.cos AS cos,
+      bp.ces AS ces,
       bp.setback_front,
       bp.setback_boundary,
       bp.estimated_cost,
@@ -178,8 +178,8 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
         building_cost NUMERIC,
         issue_date DATE,
         expiry_date DATE,
-        "COS" NUMERIC,
-        "CES" NUMERIC,
+        cos NUMERIC,
+        ces NUMERIC,
         setback_front NUMERIC,
         setback_boundary NUMERIC,
         estimated_cost NUMERIC,
@@ -230,13 +230,13 @@ app.get('/api/migrate-data', async (req, res) => {
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, floors_above_ground, floors_underground, building_use, parking_place, height_m, area_sq_m, building_cost, issue_date, expiry_date, "COS", "CES", setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
+        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, floors_above_ground, floors_underground, building_use, parking_place, height_m, area_sq_m, building_cost, issue_date, expiry_date, cos, ces, setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) ON CONFLICT (permit_id) DO NOTHING;`,
         [
           row.permit_id, row.permit_number, row.applicant_id, row.parcel_id, 
           row.Floors_above_ground, row.floors_underground, row.building_use, 
           row.parking_place, row.height_m, row.area_sq_m, row.building_cost, 
-          row.issue_date, row.expiry_date, row.COS, row.CES, 
+          row.issue_date, row.expiry_date, row.cos, row.ces, 
           row.setback_front, row.setback_boundary, row.estimated_cost, 
           row.title_rec_no, row.status, row.input_database_date, 
           row.geom, row.calculated_area
