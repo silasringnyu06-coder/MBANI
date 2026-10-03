@@ -28,16 +28,10 @@
     
     #track-search-input { border-left: 4px solid #2563eb; }
 
-    /* Map Layout Flex Wrapper to accommodate the Sidebar */
+    /* Map Layout Flex Wrapper */
     .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
     .map-wrapper { position: relative; flex: 1; }
     #map { height: 480px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-    
-    /* Global Administrative Sidebar Panel Styling */
-    .admin-sidebar { width: 300px; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); padding: 15px; display: flex; flex-direction: column; gap: 12px; max-height: 480px; overflow-y: auto; }
-    .admin-sidebar h3 { font-size: 15px; color: #0f172a; border-bottom: 2px solid #e2e8f0; padding-bottom: 6px; }
-    .admin-sidebar label { font-size: 13px; color: #334155; cursor: pointer; display: flex; align-items: center; gap: 8px; }
-    .admin-sidebar input[type="text"] { width: 100%; padding: 8px 10px; font-size: 13px; border: 1px solid #cbd5e1; border-radius: 4px; outline: none; }
 
     .coord-banner {
       position: absolute;
@@ -103,22 +97,11 @@
       <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
-    <!-- Map Layout Wrapper with Integrated Side Panel -->
+    <!-- Map Layout Wrapper -->
     <div class="map-layout-wrapper">
       <div class="map-wrapper">
         <div id="map"></div>
         <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
-      </div>
-
-      <!-- Side Panel for Administrative Boundaries & Global Search -->
-      <div class="admin-sidebar">
-        <h3>🌍 World & Admin Boundaries</h3>
-        <div>
-          <input type="text" id="global-admin-search" placeholder="Type country, region, quarter..." />
-        </div>
-        <div style="display: flex; flex-direction: column; gap: 8px; margin-top: 5px;">
-          <label><input type="checkbox" id="toggle-admin-layers" checked /> Show Administrative Overlay</label>
-        </div>
       </div>
     </div>
 
