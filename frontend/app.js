@@ -109,9 +109,11 @@ const layersMap = {};
 let activePermitLayer = null; 
 let isShowingAllGeometries = false; 
 
-// Routing control & marker global references
+// Routing control & tracking layer group
 let trackingLayerGroup = L.layerGroup().addTo(map);
 let currentRoutingControl = null;
+let activeWatchId = null;     // Stores continuous geolocation watch ID
+let liveUserMarker = null;    // Dynamic GPS marker instance
 
 // Sorting state trackers
 let currentSortColumn = null;
@@ -152,7 +154,7 @@ function sortTableBy(columnKey) {
 }
 
 /**
- * Extracts raw [Lng, Lat] WGS84 centroid for map & routing
+ * Robust Centroid Calculation with Projection Auto-Detection (UTM 32N -> WGS84)
  */
 function getWGS84Centroid(rawGeom) {
   const geojson = parseGeom(rawGeom);
@@ -168,17 +170,26 @@ function getWGS84Centroid(rawGeom) {
       coords = coords[0];
     }
 
-    let sumLng = 0, sumLat = 0, count = 0;
+    let sumX = 0, sumY = 0, count = 0;
     for (let i = 0; i < coords.length; i++) {
       if (typeof coords[i][0] === 'number' && typeof coords[i][1] === 'number') {
-        sumLng += coords[i][0];
-        sumLat += coords[i][1];
+        sumX += coords[i][0];
+        sumY += coords[i][1];
         count++;
       }
     }
 
     if (count > 0) {
-      return { lng: sumLng / count, lat: sumLat / count };
+      const avgX = sumX / count;
+      const avgY = sumY / count;
+
+      // Auto-detect UTM projected coordinates (EPSG:32632) vs WGS84
+      if (Math.abs(avgX) > 180 || Math.abs(avgY) > 90) {
+        const wgs = proj4("EPSG:32632", "EPSG:4326", [avgX, avgY]);
+        return { lng: wgs[0], lat: wgs[1] };
+      }
+
+      return { lng: avgX, lat: avgY };
     }
   } catch (err) {
     console.warn('Centroid calculation error:', err);
@@ -211,12 +222,11 @@ function getAllProjectedCoordinates(record) {
 
       return coords.map((pt, i) => {
         if (typeof pt[0] === 'number' && typeof pt[1] === 'number') {
+          if (Math.abs(pt[0]) > 180 || Math.abs(pt[1]) > 90) {
+            return { index: i + 1, x: pt[0].toFixed(2), y: pt[1].toFixed(2) };
+          }
           const utm = proj4("EPSG:4326", "EPSG:32632", [pt[0], pt[1]]);
-          return {
-            index: i + 1,
-            x: utm[0].toFixed(2),
-            y: utm[1].toFixed(2)
-          };
+          return { index: i + 1, x: utm[0].toFixed(2), y: utm[1].toFixed(2) };
         }
         return { index: i + 1, x: 'N/A', y: 'N/A' };
       });
@@ -335,59 +345,82 @@ function togglePermitOnMap(permitKey) {
   const permitGroup = L.featureGroup();
   const compliance = checkZoningCompliance(record);
 
-  const parcelGeom = parseGeom(record.parcel_geom);
-  const buildingGeom = parseGeom(record.building_geom);
-  const combinedGeom = parseGeom(record.view_combined_geom);
+  function createGeoJsonLayer(rawGeom, style) {
+    const parsed = parseGeom(rawGeom);
+    if (!parsed) return null;
 
-  if (parcelGeom) {
-    const parcelLayer = L.geoJSON(parcelGeom, {
-      style: { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.35 }
-    });
-    const utmParcel = getProjectedCentroid(parcelGeom);
-    parcelLayer.bindPopup(`
-      <div style="font-size:13px;">
-        <strong style="color: #0284c7; font-size: 14px;">Parcel Boundary</strong><br>
-        <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-        <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-        <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>UTM X:</strong> ${utmParcel.x} m E | <strong>Y:</strong> ${utmParcel.y} m N
-      </div>
-    `);
-    parcelLayer.addTo(permitGroup);
+    let targetGeom = parsed;
+    const centroid = getWGS84Centroid(parsed);
+    if (centroid) {
+      try {
+        const reprojectCoords = (coords) => {
+          if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
+            if (Math.abs(coords[0]) > 180 || Math.abs(coords[1]) > 90) {
+              return proj4("EPSG:32632", "EPSG:4326", [coords[0], coords[1]]);
+            }
+            return coords;
+          }
+          return coords.map(reprojectCoords);
+        };
+        targetGeom = JSON.parse(JSON.stringify(parsed));
+        targetGeom.coordinates = reprojectCoords(targetGeom.coordinates);
+      } catch (e) {
+        targetGeom = parsed;
+      }
+    }
+
+    return L.geoJSON(targetGeom, { style });
   }
 
-  if (buildingGeom) {
-    const buildingLayer = L.geoJSON(buildingGeom, {
-      style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.7 }
-    });
-    const utmBuilding = getProjectedCentroid(buildingGeom);
-    buildingLayer.bindPopup(`
-      <div style="font-size:13px;">
-        <strong style="color: red; font-size: 14px;">Building Footprint</strong><br>
-        <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-        <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-        <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>UTM X:</strong> ${utmBuilding.x} m E | <strong>Y:</strong> ${utmBuilding.y} m N
-      </div>
-    `);
-    buildingLayer.addTo(permitGroup);
+  if (record.parcel_geom) {
+    const parcelLayer = createGeoJsonLayer(record.parcel_geom, { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.35 });
+    if (parcelLayer) {
+      const utmParcel = getProjectedCentroid(record.parcel_geom);
+      parcelLayer.bindPopup(`
+        <div style="font-size:13px;">
+          <strong style="color: #0284c7; font-size: 14px;">Parcel Boundary</strong><br>
+          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
+          <strong>UTM X:</strong> ${utmParcel.x} m E | <strong>Y:</strong> ${utmParcel.y} m N
+        </div>
+      `);
+      parcelLayer.addTo(permitGroup);
+    }
   }
 
-  if (!parcelGeom && !buildingGeom && combinedGeom) {
-    const combinedLayer = L.geoJSON(combinedGeom, {
-      style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.35 }
-    });
-    const utmCombined = getProjectedCentroid(combinedGeom);
-    combinedLayer.bindPopup(`
-      <div style="font-size:13px;">
-        <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
-        <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-        <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-        <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>UTM X:</strong> ${utmCombined.x} m E | <strong>Y:</strong> ${utmCombined.y} m N
-      </div>
-    `);
-    combinedLayer.addTo(permitGroup);
+  if (record.building_geom) {
+    const buildingLayer = createGeoJsonLayer(record.building_geom, { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.7 });
+    if (buildingLayer) {
+      const utmBuilding = getProjectedCentroid(record.building_geom);
+      buildingLayer.bindPopup(`
+        <div style="font-size:13px;">
+          <strong style="color: red; font-size: 14px;">Building Footprint</strong><br>
+          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
+          <strong>UTM X:</strong> ${utmBuilding.x} m E | <strong>Y:</strong> ${utmBuilding.y} m N
+        </div>
+      `);
+      buildingLayer.addTo(permitGroup);
+    }
+  }
+
+  if (!record.parcel_geom && !record.building_geom && record.view_combined_geom) {
+    const combinedLayer = createGeoJsonLayer(record.view_combined_geom, { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.35 });
+    if (combinedLayer) {
+      const utmCombined = getProjectedCentroid(record.view_combined_geom);
+      combinedLayer.bindPopup(`
+        <div style="font-size:13px;">
+          <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
+          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
+          <strong>UTM X:</strong> ${utmCombined.x} m E | <strong>Y:</strong> ${utmCombined.y} m N
+        </div>
+      `);
+      combinedLayer.addTo(permitGroup);
+    }
   }
 
   if (permitGroup.getLayers().length > 0) {
@@ -426,12 +459,9 @@ function toggleAllPermitsOnMap() {
     const compliance = checkZoningCompliance(record);
     const parcelGeom = parseGeom(record.parcel_geom);
     const buildingGeom = parseGeom(record.building_geom);
-    const combinedGeom = parseGeom(record.view_combined_geom);
 
     if (parcelGeom) {
-      const parcelLayer = L.geoJSON(parcelGeom, {
-        style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
-      });
+      const parcelLayer = L.geoJSON(parcelGeom, { style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 } });
       parcelLayer.bindPopup(`
         <div style="font-size:13px;">
           <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
@@ -443,9 +473,7 @@ function toggleAllPermitsOnMap() {
     }
 
     if (buildingGeom) {
-      const buildingLayer = L.geoJSON(buildingGeom, {
-        style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.6 }
-      });
+      const buildingLayer = L.geoJSON(buildingGeom, { style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.6 } });
       buildingLayer.bindPopup(`
         <div style="font-size:13px;">
           <strong>Building Footprint</strong><br>
@@ -454,13 +482,6 @@ function toggleAllPermitsOnMap() {
         </div>
       `);
       buildingLayer.addTo(allGroup);
-    }
-
-    if (!parcelGeom && !buildingGeom && combinedGeom) {
-      const combinedLayer = L.geoJSON(combinedGeom, {
-        style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
-      });
-      combinedLayer.addTo(allGroup);
     }
   });
 
@@ -635,7 +656,7 @@ if (searchInput) {
   });
 }
 
-// 8. GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
+// 8. REAL-TIME LIVE GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
 const trackSearchInput = document.getElementById('track-search-input');
 
 if (trackSearchInput) {
@@ -644,85 +665,148 @@ if (trackSearchInput) {
       const query = e.target.value.trim().toLowerCase();
       if (!query) return;
 
-      // 1. Clear previous routes and markers
+      // Stop any existing live geolocation watcher
+      if (activeWatchId !== null) {
+        navigator.geolocation.clearWatch(activeWatchId);
+        activeWatchId = null;
+      }
+
+      // Clear previous tracking layers & controls
       trackingLayerGroup.clearLayers();
+      liveUserMarker = null;
+
       if (currentRoutingControl) {
-        map.removeControl(currentRoutingControl);
+        try { map.removeControl(currentRoutingControl); } catch (err) {}
         currentRoutingControl = null;
       }
 
-      // 2. Find matching record
+      // Reset "Show All" state if active to prevent state overlap
+      if (isShowingAllGeometries) {
+        const toggleBtn = document.getElementById('toggleAllGeomBtn');
+        isShowingAllGeometries = false;
+        if (toggleBtn) {
+          toggleBtn.classList.remove('active');
+          toggleBtn.innerHTML = '🌐 Show All Parcels & Footprints';
+        }
+      }
+
+      // Find matching record by Permit No, Applicant Name, or Land Title
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
         (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
         (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
+        (r.title_rec_no && r.title_rec_no.toLowerCase().includes(query)) ||
         (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query))
       );
 
       if (!matchedRecord) {
-        alert("No matching building permit or house record found for: " + query);
+        alert("No matching building permit, house, or land title record found for: " + query);
         return;
       }
 
-      const key = (matchedRecord.permit_id || matchedRecord.permit_number).toString();
+      const key = (matchedRecord.permit_id || matchedRecord.permit_number || '').toString();
       togglePermitOnMap(key);
 
-      // 3. Acquire Browser Location
-      if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser.");
+      const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
+      const targetCentroid = getWGS84Centroid(rawTargetGeom);
+
+      if (!targetCentroid) {
+        alert("This record does not have valid geometry coordinates to calculate a road route.");
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const userLat = position.coords.latitude;
-          const userLng = position.coords.longitude;
+      // Helper function to initialize road route calculation
+      const calculateRoute = (originLat, originLng, isGps = true) => {
+        // User Location Pulsing Marker (Dynamic instance)
+        liveUserMarker = L.circleMarker([originLat, originLng], {
+          radius: 10,
+          fillColor: isGps ? '#2563eb' : '#f59e0b',
+          color: '#ffffff',
+          weight: 3,
+          opacity: 1,
+          fillOpacity: 0.95
+        }).bindPopup(`<b>${isGps ? '📍 Live GPS Location (Active)' : '📍 Fallback Origin (Hôtel de Ville, Yaoundé)'}</b>`);
 
-          // Add User Location Marker
-          const userMarker = L.circleMarker([userLat, userLng], {
-            radius: 9,
-            fillColor: '#2563eb',
-            color: '#ffffff',
-            weight: 3,
-            opacity: 1,
-            fillOpacity: 0.9
-          }).bindPopup("<b>📍 You Are Here</b><br>GPS Location Origin");
+        trackingLayerGroup.addLayer(liveUserMarker);
 
-          trackingLayerGroup.addLayer(userMarker);
-
-          const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
-          const targetCentroid = getWGS84Centroid(rawTargetGeom);
-
-          if (!targetCentroid) {
-            alert("This record does not have valid geometry coordinates to generate a road route.");
-            return;
+        // OSRM Road Router Engine with Navigation Instructions Panel
+        currentRoutingControl = L.Routing.control({
+          waypoints: [
+            L.latLng(originLat, originLng),
+            L.latLng(targetCentroid.lat, targetCentroid.lng)
+          ],
+          router: L.Routing.osrmv1({
+            serviceUrl: 'https://router.project-osrm.org/route/v1'
+          }),
+          routeWhileDragging: false,
+          addWaypoints: false,
+          draggableWaypoints: false,
+          fitSelectedRoutes: true,
+          show: true,
+          createMarker: function(i, wp) {
+            if (i === 0) return liveUserMarker;
+            return L.marker(wp.latLng, {
+              title: "Destination Site"
+            }).bindPopup(`
+              <div style="font-size:13px;">
+                <strong style="color:#2563eb;">🎯 Destination</strong><br>
+                <strong>Permit:</strong> ${matchedRecord.permit_number || 'N/A'}<br>
+                <strong>Applicant:</strong> ${matchedRecord.applicant_full_name || 'N/A'}
+              </div>
+            `);
+          },
+          lineOptions: {
+            styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
           }
+        }).addTo(map);
+      };
 
-          // 4. Construct OSRM Road Router Control
-          currentRoutingControl = L.Routing.control({
-            waypoints: [
-              L.latLng(userLat, userLng),
-              L.latLng(targetCentroid.lat, targetCentroid.lng)
-            ],
-            router: L.Routing.osrmv1({
-              serviceUrl: 'https://router.project-osrm.org/route/v1'
-            }),
-            routeWhileDragging: false,
-            addWaypoints: false,
-            draggableWaypoints: false,
-            fitSelectedRoutes: true,
-            show: true,
-            lineOptions: {
-              styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
-            }
-          }).addTo(map);
-        },
-        (error) => {
-          console.warn("GPS Location Access Denied/Failed:", error);
-          alert("Location access failed. Please ensure location permissions are granted in your browser settings.");
-        },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-      );
+      // Continuous Real-Time Geolocation Tracking (Yango Style)
+      if (navigator.geolocation) {
+        // 1. Initial Position Fix
+        navigator.geolocation.getCurrentPosition(
+          (position) => {
+            const initialLat = position.coords.latitude;
+            const initialLng = position.coords.longitude;
+
+            calculateRoute(initialLat, initialLng, true);
+
+            // 2. Active Continuous Location Watcher
+            activeWatchId = navigator.geolocation.watchPosition(
+              (pos) => {
+                const liveLat = pos.coords.latitude;
+                const liveLng = pos.coords.longitude;
+
+                // Move user marker live as you walk or drive
+                if (liveUserMarker) {
+                  liveUserMarker.setLatLng([liveLat, liveLng]);
+                }
+
+                // Update route origin waypoint dynamically
+                if (currentRoutingControl) {
+                  currentRoutingControl.spliceWaypoints(0, 1, L.latLng(liveLat, liveLng));
+                }
+              },
+              (err) => {
+                console.warn("Live GPS position update failed:", err);
+              },
+              {
+                enableHighAccuracy: true,
+                maximumAge: 1000,
+                timeout: 10000
+              }
+            );
+          },
+          (error) => {
+            console.warn("GPS Location Access Failed/Denied. Falling back to Yaoundé Center:", error);
+            // Fallback origin: Hôtel de Ville de Yaoundé (3.8666, 11.5167)
+            calculateRoute(3.8666, 11.5167, false);
+          },
+          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+        );
+      } else {
+        calculateRoute(3.8666, 11.5167, false);
+      }
     }
   });
 }
