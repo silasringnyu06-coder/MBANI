@@ -1,4 +1,4 @@
-// 1. Register Spatial Projection Definitions
+// 1. Register Spatial Projection Definitions (UTM Zone 32N & WGS84)
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
 
@@ -19,12 +19,9 @@ const ZONING_RULES = {
  */
 function checkZoningCompliance(record) {
   const issues = [];
-  
-  // Dynamic Zone Lookup
   const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
   const rules = ZONING_RULES[zoneName] || ZONING_RULES['Default'];
 
-  // Parse parameters from database record safely
   const parcelArea = parseFloat(record.cadastral_area || 0);
   const buildingArea = parseFloat(record.area_sq_m || 0);
   const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
@@ -32,17 +29,14 @@ function checkZoningCompliance(record) {
   const userCES = parseFloat(record.ces || 0);
   const userCOS = parseFloat(record.cos || 0);
 
-  // 1. Dynamic Height Check
   if (heightM > 0 && heightM > rules.maxHeightM) {
     issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
   }
 
-  // 2. Dynamic Floor Limit Check
   if (floors > rules.maxFloors) {
     issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
   }
 
-  // 3. Dynamic CES (Ground Coverage Ratio) Check
   let computedCES = userCES;
   if (parcelArea > 0 && buildingArea > 0) {
     computedCES = buildingArea / parcelArea;
@@ -51,7 +45,6 @@ function checkZoningCompliance(record) {
     issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${(rules.maxCES * 100)}%)`);
   }
 
-  // 4. Dynamic COS (Floor Area Ratio) Check
   let computedCOS = userCOS;
   if (parcelArea > 0 && buildingArea > 0) {
     computedCOS = (buildingArea * floors) / parcelArea;
@@ -73,7 +66,16 @@ function checkZoningCompliance(record) {
   };
 }
 
-// 2. Initialize Leaflet Map (Centered over Yaoundé, Cameroon)
+// Helper: Safely parse JSON geometry if received as String
+function parseGeom(geom) {
+  if (!geom) return null;
+  if (typeof geom === 'string') {
+    try { return JSON.parse(geom); } catch (e) { return null; }
+  }
+  return geom;
+}
+
+// 2. Initialize Leaflet Map
 const map = L.map('map', {
   zoomControl: true,
   fadeAnimation: true
@@ -93,13 +95,6 @@ const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z
   subdomains: ['0', '1', '2', '3']
 });
 
-// OpenStreetMap Basemap
-const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
-    subdomains: ['a', 'b', 'c']
-});
-
 googleSatellite.addTo(map);
 
 const baseLayers = {
@@ -111,7 +106,12 @@ L.control.layers(baseLayers).addTo(map);
 const geojsonGroup = L.featureGroup().addTo(map);
 let globalPermitData = [];
 const layersMap = {};
-let activePermitLayer = null; // Stores currently toggled parcel/building layer
+let activePermitLayer = null; 
+let isShowingAllGeometries = false; 
+
+// Routing control & marker global references
+let trackingLayerGroup = L.layerGroup().addTo(map);
+let currentRoutingControl = null;
 
 // Sorting state trackers
 let currentSortColumn = null;
@@ -126,9 +126,6 @@ map.on('mousemove', function(e) {
   }
 });
 
-/**
- * Table Sorting Helper Function (Ascending / Descending)
- */
 function sortTableBy(columnKey) {
   if (currentSortColumn === columnKey) {
     isAscending = !isAscending;
@@ -141,7 +138,6 @@ function sortTableBy(columnKey) {
     let valA = (a[columnKey] || '').toString().toLowerCase();
     let valB = (b[columnKey] || '').toString().toLowerCase();
 
-    // Numeric comparison if values are numbers
     if (!isNaN(valA) && !isNaN(valB) && valA !== '' && valB !== '') {
       valA = parseFloat(valA);
       valB = parseFloat(valB);
@@ -156,47 +152,52 @@ function sortTableBy(columnKey) {
 }
 
 /**
- * Since server coordinates are stored/returned as WGS84 (EPSG:4326) [lng, lat],
- * Leaflet needs them as-is. But for the modal table, we want to convert them 
- * BACK to projected UTM Zone 32N (EPSG:32632).
+ * Extracts raw [Lng, Lat] WGS84 centroid for map & routing
  */
-function getProjectedCentroid(geojson) {
-  if (!geojson) return { x: 'N/A', y: 'N/A' };
+function getWGS84Centroid(rawGeom) {
+  const geojson = parseGeom(rawGeom);
+  if (!geojson) return null;
   try {
     let coords = geojson.coordinates;
-    if (geojson.type === 'GeometryCollection' && geojson.geometries.length > 0) {
+    if (geojson.type === 'GeometryCollection' && geojson.geometries && geojson.geometries.length > 0) {
       coords = geojson.geometries[0].coordinates;
     }
-    if (!coords) return { x: 'N/A', y: 'N/A' };
+    if (!coords) return null;
 
     while (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
       coords = coords[0];
     }
 
-    let sumX = 0, sumY = 0, count = 0;
+    let sumLng = 0, sumLat = 0, count = 0;
     for (let i = 0; i < coords.length; i++) {
       if (typeof coords[i][0] === 'number' && typeof coords[i][1] === 'number') {
-        // Transform from server's [lng, lat] to UTM Zone 32N
-        const utm = proj4("EPSG:4326", "EPSG:32632", [coords[i][0], coords[i][1]]);
-        sumX += utm[0];
-        sumY += utm[1];
+        sumLng += coords[i][0];
+        sumLat += coords[i][1];
         count++;
       }
     }
 
     if (count > 0) {
-      return { x: (sumX / count).toFixed(2), y: (sumY / count).toFixed(2) };
+      return { lng: sumLng / count, lat: sumLat / count };
     }
   } catch (err) {
-    console.warn('Centroid error:', err);
+    console.warn('Centroid calculation error:', err);
   }
-  return { x: 'N/A', y: 'N/A' };
+  return null;
+}
+
+function getProjectedCentroid(geojson) {
+  const center = getWGS84Centroid(geojson);
+  if (!center) return { x: 'N/A', y: 'N/A' };
+  const utm = proj4("EPSG:4326", "EPSG:32632", [center.lng, center.lat]);
+  return { x: utm[0].toFixed(2), y: utm[1].toFixed(2) };
 }
 
 function getAllProjectedCoordinates(record) {
   const result = { parcel: [], building: [] };
   
-  function extractAndProjectPoints(geojson) {
+  function extractAndProjectPoints(rawGeom) {
+    const geojson = parseGeom(rawGeom);
     if (!geojson) return [];
     try {
       let coords = geojson.type === 'GeometryCollection' && geojson.geometries.length > 0 
@@ -210,7 +211,6 @@ function getAllProjectedCoordinates(record) {
 
       return coords.map((pt, i) => {
         if (typeof pt[0] === 'number' && typeof pt[1] === 'number') {
-          // Convert server [lng, lat] to UTM Zone 32N [Easting, Northing]
           const utm = proj4("EPSG:4326", "EPSG:32632", [pt[0], pt[1]]);
           return {
             index: i + 1,
@@ -237,10 +237,9 @@ function getAllProjectedCoordinates(record) {
 async function loadBuildingPermit(dbSource = 'local') {
   const tableBody = document.getElementById('permit-table-body');
   if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Loading building permit data from ${dbSource} database...</td></tr>`;
+    tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Loading building permit data...</td></tr>`;
   }
 
-  // Forces local backend usage when running locally or straight from file explorer
   const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
   const baseUrl = isLocal ? 'http://localhost:5000' : 'https://mbani.onrender.com';
 
@@ -257,24 +256,30 @@ async function loadBuildingPermit(dbSource = 'local') {
   } catch (error) {
     console.error('Error fetching data:', error);
     if (tableBody) {
-      tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: red;">Failed to load data from ${dbSource} server. Make sure backend is running on port 5000.</td></tr>`;
+      tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: red;">Failed to load data from server. Ensure backend API is active on port 5000.</td></tr>`;
     }
   }
 }
 
-// 5. Render Data into Table (Map stays clean by default until clicked)
+// 5. Render Data into Table & Prepare Spatial Map Objects
 function renderTableAndMap(data) {
   const tableBody = document.getElementById('permit-table-body');
   if (!tableBody) return;
   
   tableBody.innerHTML = '';
   
-  // Clear map layers so map is empty by default
   geojsonGroup.clearLayers();
   Object.keys(layersMap).forEach(key => delete layersMap[key]);
   if (activePermitLayer) {
     map.removeLayer(activePermitLayer);
     activePermitLayer = null;
+  }
+  isShowingAllGeometries = false;
+  
+  const toggleAllBtn = document.getElementById('toggleAllGeomBtn');
+  if (toggleAllBtn) {
+    toggleAllBtn.classList.remove('active');
+    toggleAllBtn.innerHTML = '🌐 Show All Parcels & Footprints';
   }
 
   if (!data || data.length === 0) {
@@ -283,12 +288,7 @@ function renderTableAndMap(data) {
   }
 
   data.forEach((record, idx) => {
-    const status = (record.status || record.permit_status || '').toLowerCase();
-    let badgeClass = 'status-badge status-pending';
-    if (status.includes('approv') || status.includes('valide')) badgeClass = 'status-badge status-approved';
-    else if (status.includes('reject') || status.includes('refus')) badgeClass = 'status-badge status-rejected';
-
-    const permitKey = record.permit_id || record.permit_number || idx;
+    const permitKey = (record.permit_id || record.permit_number || idx).toString();
     layersMap[permitKey] = record;
 
     const row = document.createElement('tr');
@@ -305,7 +305,6 @@ function renderTableAndMap(data) {
       </td>
     `;
     
-    // Row click toggles parcel/building on/off map
     row.onclick = () => {
       togglePermitOnMap(permitKey);
     };
@@ -319,81 +318,73 @@ function renderTableAndMap(data) {
 }
 
 /**
- * Toggle Parcel / Building Footprint On-Click (Click to Show & Zoom, Unclick to Hide)
+ * Toggle Parcel / Building Footprint On-Click
  */
 function togglePermitOnMap(permitKey) {
   const record = layersMap[permitKey];
   if (!record) return;
 
-  // 1. If this exact permit is already visible, unclick/remove it
   if (activePermitLayer && activePermitLayer.permitKey === permitKey) {
     geojsonGroup.clearLayers();
     activePermitLayer = null;
-    return; // Map is clean again
+    return;
   }
 
-  // 2. Clear previous layer so only current selection is active
   geojsonGroup.clearLayers();
 
   const permitGroup = L.featureGroup();
   const compliance = checkZoningCompliance(record);
-  const geomFilter = document.getElementById('geometry-filter')?.value || 'both';
 
-  // Render Parcel Geometry with Popup
-  if (record.parcel_geom && (geomFilter === 'both' || geomFilter === 'parcel')) {
-    const parcelLayer = L.geoJSON(record.parcel_geom, {
+  const parcelGeom = parseGeom(record.parcel_geom);
+  const buildingGeom = parseGeom(record.building_geom);
+  const combinedGeom = parseGeom(record.view_combined_geom);
+
+  if (parcelGeom) {
+    const parcelLayer = L.geoJSON(parcelGeom, {
       style: { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.35 }
     });
-
-    const utmParcel = getProjectedCentroid(record.parcel_geom);
+    const utmParcel = getProjectedCentroid(parcelGeom);
     parcelLayer.bindPopup(`
       <div style="font-size:13px;">
         <strong style="color: #0284c7; font-size: 14px;">Parcel Boundary</strong><br>
         <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
         <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
         <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>Center UTM X:</strong> ${utmParcel.x} m E<br>
-        <strong>Center UTM Y:</strong> ${utmParcel.y} m N
+        <strong>UTM X:</strong> ${utmParcel.x} m E | <strong>Y:</strong> ${utmParcel.y} m N
       </div>
     `);
     parcelLayer.addTo(permitGroup);
   }
 
-  // Render Building Footprint with Popup
-  if (record.building_geom && (geomFilter === 'both' || geomFilter === 'building')) {
-    const buildingLayer = L.geoJSON(record.building_geom, {
+  if (buildingGeom) {
+    const buildingLayer = L.geoJSON(buildingGeom, {
       style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.7 }
     });
-
-    const utmBuilding = getProjectedCentroid(record.building_geom);
+    const utmBuilding = getProjectedCentroid(buildingGeom);
     buildingLayer.bindPopup(`
       <div style="font-size:13px;">
         <strong style="color: red; font-size: 14px;">Building Footprint</strong><br>
         <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
         <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-        <strong>Zoning Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>Center UTM X:</strong> ${utmBuilding.x} m E<br>
-        <strong>Center UTM Y:</strong> ${utmBuilding.y} m N
+        <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
+        <strong>UTM X:</strong> ${utmBuilding.x} m E | <strong>Y:</strong> ${utmBuilding.y} m N
       </div>
     `);
     buildingLayer.addTo(permitGroup);
   }
 
-  // Fallback combined geometry
-  if (!record.parcel_geom && !record.building_geom && record.view_combined_geom) {
-    const combinedLayer = L.geoJSON(record.view_combined_geom, {
+  if (!parcelGeom && !buildingGeom && combinedGeom) {
+    const combinedLayer = L.geoJSON(combinedGeom, {
       style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.35 }
     });
-
-    const utmCombined = getProjectedCentroid(record.view_combined_geom);
+    const utmCombined = getProjectedCentroid(combinedGeom);
     combinedLayer.bindPopup(`
       <div style="font-size:13px;">
         <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
         <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
         <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
         <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-        <strong>Center UTM X:</strong> ${utmCombined.x} m E<br>
-        <strong>Center UTM Y:</strong> ${utmCombined.y} m N
+        <strong>UTM X:</strong> ${utmCombined.x} m E | <strong>Y:</strong> ${utmCombined.y} m N
       </div>
     `);
     combinedLayer.addTo(permitGroup);
@@ -404,14 +395,86 @@ function togglePermitOnMap(permitKey) {
     activePermitLayer = permitGroup;
     activePermitLayer.permitKey = permitKey;
 
-    // Zoom closest directly to target parcel footprint (Zoom Level 19)
-    map.fitBounds(permitGroup.getBounds(), { padding: [20, 20], maxZoom: 19, animate: true });
+    map.fitBounds(permitGroup.getBounds(), { padding: [30, 30], maxZoom: 19, animate: true });
     permitGroup.openPopup();
   }
 }
 
-function focusOnPermit(permitKey) {
-  togglePermitOnMap(permitKey);
+/**
+ * Global Map Toggle: Display/Hide All Loaded Parcels
+ */
+function toggleAllPermitsOnMap() {
+  const toggleBtn = document.getElementById('toggleAllGeomBtn');
+
+  if (isShowingAllGeometries) {
+    geojsonGroup.clearLayers();
+    activePermitLayer = null;
+    isShowingAllGeometries = false;
+    if (toggleBtn) {
+      toggleBtn.classList.remove('active');
+      toggleBtn.innerHTML = '🌐 Show All Parcels & Footprints';
+    }
+    return;
+  }
+
+  geojsonGroup.clearLayers();
+  activePermitLayer = null;
+
+  const allGroup = L.featureGroup();
+
+  Object.values(layersMap).forEach(record => {
+    const compliance = checkZoningCompliance(record);
+    const parcelGeom = parseGeom(record.parcel_geom);
+    const buildingGeom = parseGeom(record.building_geom);
+    const combinedGeom = parseGeom(record.view_combined_geom);
+
+    if (parcelGeom) {
+      const parcelLayer = L.geoJSON(parcelGeom, {
+        style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
+      });
+      parcelLayer.bindPopup(`
+        <div style="font-size:13px;">
+          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}
+        </div>
+      `);
+      parcelLayer.addTo(allGroup);
+    }
+
+    if (buildingGeom) {
+      const buildingLayer = L.geoJSON(buildingGeom, {
+        style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.6 }
+      });
+      buildingLayer.bindPopup(`
+        <div style="font-size:13px;">
+          <strong>Building Footprint</strong><br>
+          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}
+        </div>
+      `);
+      buildingLayer.addTo(allGroup);
+    }
+
+    if (!parcelGeom && !buildingGeom && combinedGeom) {
+      const combinedLayer = L.geoJSON(combinedGeom, {
+        style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
+      });
+      combinedLayer.addTo(allGroup);
+    }
+  });
+
+  if (allGroup.getLayers().length > 0) {
+    geojsonGroup.addLayer(allGroup);
+    map.fitBounds(allGroup.getBounds(), { padding: [30, 30], animate: true });
+    isShowingAllGeometries = true;
+    if (toggleBtn) {
+      toggleBtn.classList.add('active');
+      toggleBtn.innerHTML = '❌ Clear All Features';
+    }
+  } else {
+    alert("No spatial geometries found in the loaded database records.");
+  }
 }
 
 function showDetails(index) {
@@ -459,10 +522,10 @@ function showDetails(index) {
 
   if (modalBody) {
     modalBody.innerHTML = `
-      <div class="details-section" style="background:#0f172a; color:white; padding:6px 8px; font-weight:bold; border-radius:4px;">Zoning & Urban Planning Compliance</div>
+      <div class="details-section" style="background:#0f172a; color:white; padding:6px 8px; font-weight:bold; border-radius:4px;">Zoning Compliance Diagnosis</div>
       <div class="details-item"><span>Status (${compliance.zoneUsed})</span>${compliance.badgeHTML}</div>
       <div class="details-item" style="grid-column: span 2;">
-        <span>Regulatory Diagnosis</span>
+        <span>Regulatory Evaluation</span>
         <ul style="margin: 4px 0 0 16px; padding:0; font-size:12px;">
           ${issuesMarkup}
         </ul>
@@ -474,7 +537,7 @@ function showDetails(index) {
 
       <div class="details-section">Applicant Information</div>
       <div class="details-item"><span>Full Name</span>${r.applicant_full_name || 'N/A'}</div>
-      <div class="details-item"><span>nui</span>${r.applicant_nui || r.applicant_nui || 'N/A'}</div>
+      <div class="details-item"><span>NUI</span>${r.applicant_nui || 'N/A'}</div>
       <div class="details-item"><span>Phone</span>${r.applicant_phone_number || r.applicant_phone || 'N/A'}</div>
       <div class="details-item"><span>Email</span>${r.applicant_email || 'N/A'}</div>
       <div class="details-item" style="grid-column: span 2;"><span>Address</span>${r.applicant_address || 'N/A'}</div>
@@ -489,17 +552,16 @@ function showDetails(index) {
       <div class="details-item"><span>Arrondissement</span>${r.parcel_arrondissement || 'N/A'}</div>
       <div class="details-item"><span>Cadastral Area</span>${r.cadastral_area ? r.cadastral_area + ' m²' : 'N/A'}</div>
       
-      <div class="details-section">Building permit</div>
+      <div class="details-section">Building Parameters</div>
       <div class="details-item"><span>Building Use</span>${r.building_use || 'N/A'}</div>
       <div class="details-item"><span>Floors Above Ground</span>${r.floors_above_ground || 'N/A'}</div>
       <div class="details-item"><span>Underground Floors</span>${r.floors_underground || 'N/A'}</div>
       <div class="details-item"><span>Height</span>${r.height_m ? r.height_m + ' m' : 'N/A'}</div>
       <div class="details-item"><span>COS</span>${r.cos || 'N/A'}</div>
       <div class="details-item"><span>CES</span>${r.ces || 'N/A'}</div>
-      <div class="details-item"><span>estimated cost</span>${r.estimated_cost || 'N/A'}</div>
-      <div class="details-item"><span>parking place</span>${r.parking_place || 'N/A'}</div>
-      <div class="details-item"><span>height m</span>${r.height_m || 'N/A'}</div>
-      <div class="details-item"><span>area sq m</span>${r.area_sq_m || 'N/A'}</div>
+      <div class="details-item"><span>Estimated Cost</span>${r.estimated_cost || 'N/A'}</div>
+      <div class="details-item"><span>Parking Places</span>${r.parking_place || 'N/A'}</div>
+      <div class="details-item"><span>Area</span>${r.area_sq_m ? r.area_sq_m + ' m²' : 'N/A'}</div>
     `;
   }
   const detailModal = document.getElementById('detail-modal');
@@ -511,7 +573,7 @@ function closeModal() {
   if (detailModal) detailModal.style.display = 'none';
 }
 
-// 6. Zone Info Inspector Listener (For HTML Zone Select Tool)
+// 6. Zone Info Inspector Listener
 function displayZoneInfo(selectedZone) {
   const rules = ZONING_RULES[selectedZone] || ZONING_RULES['Default'];
   const infoDisplay = document.getElementById('zone-info-display');
@@ -525,7 +587,7 @@ function displayZoneInfo(selectedZone) {
   }
 }
 
-// 7. Toggle Buttons UI Logic for Switching Search Bars
+// 7. Toggle Search Mode Buttons
 const togglePermitBtn = document.getElementById('togglePermitBtn');
 const toggleTrackerBtn = document.getElementById('toggleTrackerBtn');
 const permitSearchBox = document.getElementById('permitSearchBox');
@@ -573,10 +635,8 @@ if (searchInput) {
   });
 }
 
-// GPS Tracker & Road-Following Routing Search Handler (Yango style with Close-Up Focus)
+// 8. GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
 const trackSearchInput = document.getElementById('track-search-input');
-let trackingLayerGroup = L.layerGroup().addTo(map);
-let currentRoutingControl = null;
 
 if (trackSearchInput) {
   trackSearchInput.addEventListener('keypress', async function (e) {
@@ -584,13 +644,14 @@ if (trackSearchInput) {
       const query = e.target.value.trim().toLowerCase();
       if (!query) return;
 
-      // Clear previous routes/markers
+      // 1. Clear previous routes and markers
       trackingLayerGroup.clearLayers();
       if (currentRoutingControl) {
         map.removeControl(currentRoutingControl);
         currentRoutingControl = null;
       }
 
+      // 2. Find matching record
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
         (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
@@ -599,52 +660,72 @@ if (trackSearchInput) {
       );
 
       if (!matchedRecord) {
-        alert("No matching permit or house found!");
+        alert("No matching building permit or house record found for: " + query);
         return;
       }
 
-      const key = matchedRecord.permit_id || matchedRecord.permit_number;
-      togglePermitOnMap(key); // Display target parcel on map
+      const key = (matchedRecord.permit_id || matchedRecord.permit_number).toString();
+      togglePermitOnMap(key);
 
+      // 3. Acquire Browser Location
       if (!navigator.geolocation) {
-        alert("Geolocation is not supported by your browser");
+        alert("Geolocation is not supported by your browser.");
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(async (position) => {
-        const userLat = position.coords.latitude;
-        const userLng = position.coords.longitude;
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const userLat = position.coords.latitude;
+          const userLng = position.coords.longitude;
 
-        const userMarker = L.marker([userLat, userLng]).bindPopup("📍 You are here");
-        trackingLayerGroup.addLayer(userMarker);
+          // Add User Location Marker
+          const userMarker = L.circleMarker([userLat, userLng], {
+            radius: 9,
+            fillColor: '#2563eb',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.9
+          }).bindPopup("<b>📍 You Are Here</b><br>GPS Location Origin");
 
-        const record = layersMap[key];
-        const targetGeom = record?.parcel_geom || record?.building_geom || record?.view_combined_geom;
+          trackingLayerGroup.addLayer(userMarker);
 
-        if (targetGeom) {
-          const targetCentroid = getProjectedCentroid(targetGeom);
-          // Reverse transform centroid back to WGS84 for routing machine
-          const targetWGS84 = proj4("EPSG:32632", "EPSG:4326", [parseFloat(targetCentroid.x), parseFloat(targetCentroid.y)]);
+          const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
+          const targetCentroid = getWGS84Centroid(rawTargetGeom);
 
+          if (!targetCentroid) {
+            alert("This record does not have valid geometry coordinates to generate a road route.");
+            return;
+          }
+
+          // 4. Construct OSRM Road Router Control
           currentRoutingControl = L.Routing.control({
             waypoints: [
               L.latLng(userLat, userLng),
-              L.latLng(targetWGS84[1], targetWGS84[0])
+              L.latLng(targetCentroid.lat, targetCentroid.lng)
             ],
+            router: L.Routing.osrmv1({
+              serviceUrl: 'https://router.project-osrm.org/route/v1'
+            }),
             routeWhileDragging: false,
-            lineOptions: {
-              styles: [{ color: '#2563eb', weight: 6, opacity: 0.8 }]
-            },
+            addWaypoints: false,
+            draggableWaypoints: false,
+            fitSelectedRoutes: true,
             show: true,
-            addWaypoints: false
+            lineOptions: {
+              styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
+            }
           }).addTo(map);
-        }
-      }, (error) => {
-        console.warn("Unable to retrieve GPS position for routing.", error);
-      });
+        },
+        (error) => {
+          console.warn("GPS Location Access Denied/Failed:", error);
+          alert("Location access failed. Please ensure location permissions are granted in your browser settings.");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
     }
   });
 }
 
-// Initial Load
+// Initial Data Load
 loadBuildingPermit('local');
