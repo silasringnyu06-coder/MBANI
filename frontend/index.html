@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Building Permit Dashboard - MBANI WebGIS</title>
   
+  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   
   <!-- Leaflet Routing Machine CSS -->
@@ -27,6 +28,32 @@
     .search-box:focus { border-color: #1e293b; }
     
     #track-search-input { border-left: 4px solid #2563eb; }
+
+    /* Zone Selector Toolbar */
+    .zone-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: #ffffff;
+      padding: 10px 15px;
+      border-radius: 6px;
+      border: 1px solid #cbd5e1;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+    }
+    .zone-select {
+      padding: 8px 12px;
+      font-size: 14px;
+      border-radius: 4px;
+      border: 1px solid #cbd5e1;
+      background: #f8fafc;
+      outline: none;
+      cursor: pointer;
+    }
+    .zone-info-banner {
+      font-size: 13px;
+      color: #334155;
+      font-family: monospace;
+    }
 
     /* Map Layout Flex Wrapper */
     .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
@@ -97,11 +124,29 @@
       <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
+    <!-- Urban Zoning Regulations Inspector Toolbar -->
+    <div class="zone-toolbar">
+      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
+      <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
+        <option value="Yaoundé 1">Yaoundé 1</option>
+        <option value="Yaoundé 2">Yaoundé 2</option>
+        <option value="Yaoundé 3">Yaoundé 3</option>
+        <option value="Yaoundé 4">Yaoundé 4</option>
+        <option value="Yaoundé 5">Yaoundé 5</option>
+        <option value="Yaoundé 6">Yaoundé 6</option>
+        <option value="Yaoundé 7">Yaoundé 7</option>
+        <option value="Default" selected>Default Rules</option>
+      </select>
+      <div id="zone-info-display" class="zone-info-banner">
+        Max Height: <strong>12.0m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2.0</strong>
+      </div>
+    </div>
+
     <!-- Map Layout Wrapper -->
     <div class="map-layout-wrapper">
       <div class="map-wrapper">
         <div id="map"></div>
-        <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
+        <div id="coord-display" class="coord-banner">UTM Zone 32N (EPSG:32632) | Move cursor on map</div>
       </div>
     </div>
 
@@ -133,11 +178,14 @@
     </div>
   </div>
 
+  <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Leaflet Routing Machine JS -->
   <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
   
+  <!-- Proj4JS for Projection Conversion -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+  <!-- Application JS -->
   <script src="app.js"></script>
 </body>
 </html>
