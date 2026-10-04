@@ -95,11 +95,19 @@ const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z
   subdomains: ['0', '1', '2', '3']
 });
 
+// OpenStreetMap Basemap
+const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors',
+  subdomains: ['a', 'b', 'c']
+});
+
 googleSatellite.addTo(map);
 
 const baseLayers = {
   "Google Satellite": googleSatellite,
-  "Google Satellite Hybrid": googleHybrid
+  "Google Satellite Hybrid": googleHybrid,
+  "OpenStreetMap": openStreetMap
 };
 L.control.layers(baseLayers).addTo(map);
 
@@ -112,7 +120,7 @@ let isShowingAllGeometries = false;
 // Routing control & tracking layer group
 let trackingLayerGroup = L.layerGroup().addTo(map);
 let currentRoutingControl = null;
-let activeWatchId = null;     // Stores continuous geolocation watch ID
+let activeWatchId = null;     // Continuous geolocation watch ID
 let liveUserMarker = null;    // Dynamic GPS marker instance
 
 // Sorting state trackers
@@ -638,11 +646,16 @@ if (togglePermitBtn && toggleTrackerBtn) {
   });
 }
 
-// General Search Input Handler
+// General Search Input Handler (With Auto-Zoom on Single Match)
 const searchInput = document.getElementById('search-input');
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase();
+    const query = e.target.value.toLowerCase().trim();
+    if (!query) {
+      renderTableAndMap(globalPermitData);
+      return;
+    }
+
     const filtered = globalPermitData.filter(r => 
       (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
       (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
@@ -652,7 +665,14 @@ if (searchInput) {
       (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query)) ||
       (r.applicant_nui && r.applicant_nui.toLowerCase().includes(query))
     );
+
     renderTableAndMap(filtered);
+
+    // Auto-zoom onto target footprint if search yields exactly 1 result
+    if (filtered.length === 1) {
+      const matchKey = (filtered[0].permit_id || filtered[0].permit_number).toString();
+      togglePermitOnMap(matchKey);
+    }
   });
 }
 
@@ -761,8 +781,14 @@ if (trackSearchInput) {
         }).addTo(map);
       };
 
-      // Continuous Real-Time Geolocation Tracking (Yango Style)
+      // Continuous Real-Time Geolocation Tracking (Yango / Navigation Style)
       if (navigator.geolocation) {
+        const gpsOptions = {
+          enableHighAccuracy: true,
+          timeout: 15000,
+          maximumAge: 0
+        };
+
         // 1. Initial Position Fix
         navigator.geolocation.getCurrentPosition(
           (position) => {
@@ -790,19 +816,23 @@ if (trackSearchInput) {
               (err) => {
                 console.warn("Live GPS position update failed:", err);
               },
-              {
-                enableHighAccuracy: true,
-                maximumAge: 1000,
-                timeout: 10000
-              }
+              gpsOptions
             );
           },
           (error) => {
-            console.warn("GPS Location Access Failed/Denied. Falling back to Yaoundé Center:", error);
+            let errorMsg = "GPS access unavailable. Defaulting route origin to Hôtel de Ville de Yaoundé.";
+            if (error.code === error.PERMISSION_DENIED) {
+              errorMsg = "GPS access denied. Please enable location permissions on your phone.";
+            } else if (error.code === error.TIMEOUT) {
+              errorMsg = "GPS request timed out. Make sure GPS is turned ON on your phone.";
+            }
+            console.warn("GPS Location Access Failed/Denied:", error);
+            alert(errorMsg);
+
             // Fallback origin: Hôtel de Ville de Yaoundé (3.8666, 11.5167)
             calculateRoute(3.8666, 11.5167, false);
           },
-          { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+          gpsOptions
         );
       } else {
         calculateRoute(3.8666, 11.5167, false);
