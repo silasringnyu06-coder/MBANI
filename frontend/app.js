@@ -75,31 +75,38 @@ function parseGeom(geom) {
   return geom;
 }
 
-// 2. Initialize Leaflet Map
+// 2. Initialize Leaflet Map (Centered over Yaoundé, Cameroon)
 const map = L.map('map', {
   zoomControl: true,
   fadeAnimation: true
 }).setView([3.848, 11.502], 12);
 
-// Google Satellite Imagery
+// Google Satellite Imagery Layer
 const googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
   maxZoom: 20,
   attribution: 'Map data © Google',
   subdomains: ['0', '1', '2', '3']
 });
 
-// Google Hybrid Basemap
+// Google Hybrid Basemap Layer
 const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
   maxZoom: 20,
   attribution: 'Map data © Google',
   subdomains: ['0', '1', '2', '3']
 });
 
+// OpenStreetMap Basemap Layer
+const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19,
+  attribution: '&copy; OpenStreetMap contributors'
+});
+
 googleSatellite.addTo(map);
 
 const baseLayers = {
   "Google Satellite": googleSatellite,
-  "Google Satellite Hybrid": googleHybrid
+  "Google Satellite Hybrid": googleHybrid,
+  "OpenStreetMap": openStreetMap
 };
 L.control.layers(baseLayers).addTo(map);
 
@@ -109,9 +116,12 @@ const layersMap = {};
 let activePermitLayer = null; 
 let isShowingAllGeometries = false; 
 
-// Routing control & marker global references
+// Routing control & live GPS movement global state trackers
 let trackingLayerGroup = L.layerGroup().addTo(map);
 let currentRoutingControl = null;
+let liveGpsWatchId = null;
+let liveUserMarker = null;
+let liveAccuracyCircle = null;
 
 // Sorting state trackers
 let currentSortColumn = null;
@@ -635,8 +645,22 @@ if (searchInput) {
   });
 }
 
-// 8. GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
+// 8. REAL-TIME LIVE GPS TRACKER & STREET-FOLLOWING NAVIGATION ENGINE (Yango Style)
 const trackSearchInput = document.getElementById('track-search-input');
+
+function stopLiveNavigation() {
+  if (liveGpsWatchId !== null) {
+    navigator.geolocation.clearWatch(liveGpsWatchId);
+    liveGpsWatchId = null;
+  }
+  trackingLayerGroup.clearLayers();
+  if (currentRoutingControl) {
+    map.removeControl(currentRoutingControl);
+    currentRoutingControl = null;
+  }
+  liveUserMarker = null;
+  liveAccuracyCircle = null;
+}
 
 if (trackSearchInput) {
   trackSearchInput.addEventListener('keypress', async function (e) {
@@ -644,14 +668,10 @@ if (trackSearchInput) {
       const query = e.target.value.trim().toLowerCase();
       if (!query) return;
 
-      // 1. Clear previous routes and markers
-      trackingLayerGroup.clearLayers();
-      if (currentRoutingControl) {
-        map.removeControl(currentRoutingControl);
-        currentRoutingControl = null;
-      }
+      // Reset any active live tracking session
+      stopLiveNavigation();
 
-      // 2. Find matching record
+      // Find matching building permit record
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
         (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
@@ -667,61 +687,86 @@ if (trackSearchInput) {
       const key = (matchedRecord.permit_id || matchedRecord.permit_number).toString();
       togglePermitOnMap(key);
 
-      // 3. Acquire Browser Location
       if (!navigator.geolocation) {
         alert("Geolocation is not supported by your browser.");
         return;
       }
 
-      navigator.geolocation.getCurrentPosition(
+      const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
+      const targetCentroid = getWGS84Centroid(rawTargetGeom);
+
+      if (!targetCentroid) {
+        alert("This record does not contain valid spatial geometries for routing.");
+        return;
+      }
+
+      const destinationLatLng = L.latLng(targetCentroid.lat, targetCentroid.lng);
+
+      // Start Real-Time Geolocation Watcher (Continuous  Position Tracking)
+      liveGpsWatchId = navigator.geolocation.watchPosition(
         (position) => {
           const userLat = position.coords.latitude;
           const userLng = position.coords.longitude;
+          const accuracy = position.coords.accuracy || 10;
+          const currentLatLng = L.latLng(userLat, userLng);
 
-          // Add User Location Marker
-          const userMarker = L.circleMarker([userLat, userLng], {
-            radius: 9,
-            fillColor: '#2563eb',
-            color: '#ffffff',
-            weight: 3,
-            opacity: 1,
-            fillOpacity: 0.9
-          }).bindPopup("<b>📍 You Are Here</b><br>GPS Location Origin");
+          // Render / Update Dynamic User Location Marker & Accuracy Halo
+          if (!liveUserMarker) {
+            liveAccuracyCircle = L.circle(currentLatLng, {
+              radius: accuracy,
+              color: '#2563eb',
+              fillColor: '#3b82f6',
+              fillOpacity: 0.15,
+              weight: 1
+            });
 
-          trackingLayerGroup.addLayer(userMarker);
+            liveUserMarker = L.circleMarker(currentLatLng, {
+              radius: 9,
+              fillColor: '#2563eb',
+              color: '#ffffff',
+              weight: 3,
+              opacity: 1,
+              fillOpacity: 0.95
+            }).bindPopup("<b>📍 Live Location (Yango Tracker)</b><br>Navigating to parcel");
 
-          const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
-          const targetCentroid = getWGS84Centroid(rawTargetGeom);
-
-          if (!targetCentroid) {
-            alert("This record does not have valid geometry coordinates to generate a road route.");
-            return;
+            trackingLayerGroup.addLayer(liveAccuracyCircle);
+            trackingLayerGroup.addLayer(liveUserMarker);
+          } else {
+            liveUserMarker.setLatLng(currentLatLng);
+            liveAccuracyCircle.setLatLng(currentLatLng);
+            liveAccuracyCircle.setRadius(accuracy);
           }
 
-          // 4. Construct OSRM Road Router Control
-          currentRoutingControl = L.Routing.control({
-            waypoints: [
-              L.latLng(userLat, userLng),
-              L.latLng(targetCentroid.lat, targetCentroid.lng)
-            ],
-            router: L.Routing.osrmv1({
-              serviceUrl: 'https://router.project-osrm.org/route/v1'
-            }),
-            routeWhileDragging: false,
-            addWaypoints: false,
-            draggableWaypoints: false,
-            fitSelectedRoutes: true,
-            show: true,
-            lineOptions: {
-              styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
-            }
-          }).addTo(map);
+          // Initialize or Dynamically Update OSRM Route Control
+          if (!currentRoutingControl) {
+            currentRoutingControl = L.Routing.control({
+              waypoints: [currentLatLng, destinationLatLng],
+              router: L.Routing.osrmv1({
+                serviceUrl: 'https://router.project-osrm.org/route/v1'
+              }),
+              routeWhileDragging: false,
+              addWaypoints: false,
+              draggableWaypoints: false,
+              fitSelectedRoutes: false,
+              show: true,
+              lineOptions: {
+                styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
+              }
+            }).addTo(map);
+
+            // Initial view frame encompassing user position and target parcel
+            const navBounds = L.latLngBounds([currentLatLng, destinationLatLng]);
+            map.fitBounds(navBounds, { padding: [50, 50], maxZoom: 18 });
+          } else {
+            // Update routing waypoint dynamically as user moves
+            currentRoutingControl.setWaypoints([currentLatLng, destinationLatLng]);
+          }
         },
         (error) => {
-          console.warn("GPS Location Access Denied/Failed:", error);
-          alert("Location access failed. Please ensure location permissions are granted in your browser settings.");
+          console.warn("GPS Location Error:", error);
+          alert("Unable to acquire live GPS position. Check location permissions.");
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
       );
     }
   });
