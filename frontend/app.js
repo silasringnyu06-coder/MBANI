@@ -488,7 +488,7 @@ function showDetails(index) {
   const compliance = checkZoningCompliance(r);
 
   const issuesMarkup = compliance.issuesList.length > 0 
-    ? compliance.issuesList.map(issue => `<li style="color:#e74c3c; margin-bottom:2px; font-weight:500;">⚠️️ ${issue}</li>`).join('')
+    ? compliance.issuesList.map(issue => `<li style="color:#e74c3c; margin-bottom:2px; font-weight:500;">⚠️ ${issue}</li>`).join('')
     : `<li style="color:#2ecc71; font-weight:bold; list-style-type:none;">✓ Passed all zoning rules for ${compliance.zoneUsed}</li>`;
 
   const renderTable = (points, title) => {
@@ -635,148 +635,94 @@ if (searchInput) {
   });
 }
 
-// =========================================================================
-// 8. LIVE GPS ROUTING (DISTANCE, TIME, TURN-BY-TURN & ROAD LINE)
-// =========================================================================
+// 8. GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
+const trackSearchInput = document.getElementById('track-search-input');
 
-// Ensure Leaflet Routing Machine CSS/JS are loaded dynamically if missing
-(function loadRoutingDependencies() {
-  if (!document.getElementById('leaflet-routing-css')) {
-    const css = document.createElement('link');
-    css.id = 'leaflet-routing-css';
-    css.rel = 'stylesheet';
-    css.href = 'https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css';
-    document.head.appendChild(css);
-  }
-  if (typeof L.Routing === 'undefined') {
-    const js = document.createElement('script');
-    js.src = 'https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js';
-    document.head.appendChild(js);
-  }
-})();
-
-// Active GPS Watch ID for continuous live tracking movement
-let liveWatchId = null;
-
-async function startLiveRouting(query) {
-  const searchQuery = query.trim().toLowerCase();
-  if (!searchQuery) return;
-
-  // 1. Clear previous routes and markers
-  trackingLayerGroup.clearLayers();
-  if (currentRoutingControl) {
-    map.removeControl(currentRoutingControl);
-    currentRoutingControl = null;
-  }
-  if (liveWatchId !== null) {
-    navigator.geolocation.clearWatch(liveWatchId);
-    liveWatchId = null;
-  }
-
-  // 2. Find matching parcel/house record from database
-  const matchedRecord = globalPermitData.find(r => 
-    (r.permit_number && r.permit_number.toLowerCase().includes(searchQuery)) ||
-    (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(searchQuery)) ||
-    (r.land_title_no && r.land_title_no.toLowerCase().includes(searchQuery)) ||
-    (r.title_rec_no && r.title_rec_no.toLowerCase().includes(searchQuery)) ||
-    (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(searchQuery))
-  );
-
-  if (!matchedRecord) {
-    alert("❌ No matching house or permit found for: " + query);
-    return;
-  }
-
-  // Highlight and focus parcel boundary on map
-  const permitKey = (matchedRecord.permit_id || matchedRecord.permit_number).toString();
-  togglePermitOnMap(permitKey);
-
-  const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
-  const targetCentroid = getWGS84Centroid(rawTargetGeom);
-
-  if (!targetCentroid) {
-    alert("❌ Selected property does not have spatial coordinates to calculate a road route.");
-    return;
-  }
-
-  // 3. Get User's Live GPS Location & Start Navigation
-  if (!navigator.geolocation) {
-    alert("⚠️ Geolocation is not supported by your browser.");
-    return;
-  }
-
-  // Destination Marker on Target Parcel
-  const targetMarker = L.marker([targetCentroid.lat, targetCentroid.lng], {
-    title: matchedRecord.applicant_full_name || 'Destination'
-  }).bindPopup(`
-    <div style="font-size:13px;">
-      <b style="color:#2563eb;">🎯 Destination</b><br>
-      <b>Applicant:</b> ${matchedRecord.applicant_full_name || 'N/A'}<br>
-      <b>Permit:</b> ${matchedRecord.permit_number || 'N/A'}<br>
-      <b>Land Title:</b> ${matchedRecord.land_title_no || 'N/A'}
-    </div>
-  `).addTo(trackingLayerGroup);
-
-  // High-accuracy live position tracker
-  liveWatchId = navigator.geolocation.watchPosition(
-    (position) => {
-      const userLat = position.coords.latitude;
-      const userLng = position.coords.longitude;
-
-      // Update or create live user GPS position marker
-      if (!window.userGpsMarker) {
-        window.userGpsMarker = L.circleMarker([userLat, userLng], {
-          radius: 9,
-          fillColor: '#2563eb',
-          color: '#ffffff',
-          weight: 3,
-          opacity: 1,
-          fillOpacity: 0.95
-        }).bindPopup("<b>📍 Live Location</b>").addTo(trackingLayerGroup);
-      } else {
-        window.userGpsMarker.setLatLng([userLat, userLng]);
-      }
-
-      // Initialize or update turn-by-turn road navigation control
-      if (!currentRoutingControl && typeof L.Routing !== 'undefined') {
-        currentRoutingControl = L.Routing.control({
-          waypoints: [
-            L.latLng(userLat, userLng),
-            L.latLng(targetCentroid.lat, targetCentroid.lng)
-          ],
-          router: L.Routing.osrmv1({
-            serviceUrl: 'https://router.project-osrm.org/route/v1'
-          }),
-          routeWhileDragging: false,
-          addWaypoints: false,
-          draggableWaypoints: false,
-          fitSelectedRoutes: true,
-          show: true, // Shows panel with exact distance (km) and estimated drive time (mins)
-          lineOptions: {
-            styles: [{ color: '#2563eb', weight: 6, opacity: 0.9 }]
-          }
-        }).addTo(map);
-      } else if (currentRoutingControl) {
-        // Update user starting waypoint smoothly as they move
-        currentRoutingControl.setWaypoints([
-          L.latLng(userLat, userLng),
-          L.latLng(targetCentroid.lat, targetCentroid.lng)
-        ]);
-      }
-    },
-    (error) => {
-      console.warn("GPS Location Access Denied/Failed:", error);
-    },
-    { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
-  );
-}
-
-// Attach listener to track-search-input (GPS House Tracker box)
-const trackerInput = document.getElementById('track-search-input');
-if (trackerInput) {
-  trackerInput.addEventListener('keypress', function (e) {
+if (trackSearchInput) {
+  trackSearchInput.addEventListener('keypress', async function (e) {
     if (e.key === 'Enter') {
-      startLiveRouting(this.value);
+      const query = e.target.value.trim().toLowerCase();
+      if (!query) return;
+
+      // 1. Clear previous routes and markers
+      trackingLayerGroup.clearLayers();
+      if (currentRoutingControl) {
+        map.removeControl(currentRoutingControl);
+        currentRoutingControl = null;
+      }
+
+      // 2. Find matching record
+      const matchedRecord = globalPermitData.find(r => 
+        (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
+        (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
+        (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
+        (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query))
+      );
+
+      if (!matchedRecord) {
+        alert("No matching building permit or house record found for: " + query);
+        return;
+      }
+
+      const key = (matchedRecord.permit_id || matchedRecord.permit_number).toString();
+      togglePermitOnMap(key);
+
+      // 3. Acquire Browser Location
+      if (!navigator.geolocation) {
+        alert("Geolocation is not supported by your browser.");
+        return;
+      }
+
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const userLat = position.coords.latitude;
+          const userLng = position.coords.longitude;
+
+          // Add User Location Marker
+          const userMarker = L.circleMarker([userLat, userLng], {
+            radius: 9,
+            fillColor: '#2563eb',
+            color: '#ffffff',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.9
+          }).bindPopup("<b>📍 You Are Here</b><br>GPS Location Origin");
+
+          trackingLayerGroup.addLayer(userMarker);
+
+          const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
+          const targetCentroid = getWGS84Centroid(rawTargetGeom);
+
+          if (!targetCentroid) {
+            alert("This record does not have valid geometry coordinates to generate a road route.");
+            return;
+          }
+
+          // 4. Construct OSRM Road Router Control
+          currentRoutingControl = L.Routing.control({
+            waypoints: [
+              L.latLng(userLat, userLng),
+              L.latLng(targetCentroid.lat, targetCentroid.lng)
+            ],
+            router: L.Routing.osrmv1({
+              serviceUrl: 'https://router.project-osrm.org/route/v1'
+            }),
+            routeWhileDragging: false,
+            addWaypoints: false,
+            draggableWaypoints: false,
+            fitSelectedRoutes: true,
+            show: true,
+            lineOptions: {
+              styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
+            }
+          }).addTo(map);
+        },
+        (error) => {
+          console.warn("GPS Location Access Denied/Failed:", error);
+          alert("Location access failed. Please ensure location permissions are granted in your browser settings.");
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+      );
     }
   });
 }
