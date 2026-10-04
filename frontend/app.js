@@ -2,6 +2,77 @@
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
 
+// 1.1 Zoning Rules Configuration by Arrondissement / District
+const ZONING_RULES = {
+  'Yaoundé 1': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
+  'Yaoundé 2': { maxCES: 0.70, maxCOS: 2.5, maxFloors: 5, maxHeightM: 15.0 },
+  'Yaoundé 3': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
+  'Yaoundé 4': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
+  'Yaoundé 5': { maxCES: 0.55, maxCOS: 1.8, maxFloors: 3, maxHeightM: 10.0 },
+  'Yaoundé 6': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
+  'Yaoundé 7': { maxCES: 0.45, maxCOS: 1.2, maxFloors: 2, maxHeightM: 7.5  },
+  'Default':   { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 }
+};
+
+/**
+ * Dynamic Urban Planning Compliance Engine
+ */
+function checkZoningCompliance(record) {
+  const issues = [];
+  
+  // Dynamic Zone Lookup
+  const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
+  const rules = ZONING_RULES[zoneName] || ZONING_RULES['Default'];
+
+  // Parse parameters from database record safely
+  const parcelArea = parseFloat(record.cadastral_area || 0);
+  const buildingArea = parseFloat(record.area_sq_m || 0);
+  const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
+  const heightM = parseFloat(record.height_m || 0);
+  const userCES = parseFloat(record.ces || 0);
+  const userCOS = parseFloat(record.cos || 0);
+
+  // 1. Dynamic Height Check
+  if (heightM > 0 && heightM > rules.maxHeightM) {
+    issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
+  }
+
+  // 2. Dynamic Floor Limit Check
+  if (floors > rules.maxFloors) {
+    issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
+  }
+
+  // 3. Dynamic CES (Ground Coverage Ratio) Check
+  let computedCES = userCES;
+  if (parcelArea > 0 && buildingArea > 0) {
+    computedCES = buildingArea / parcelArea;
+  }
+  if (computedCES > rules.maxCES) {
+    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${(rules.maxCES * 100)}%)`);
+  }
+
+  // 4. Dynamic COS (Floor Area Ratio) Check
+  let computedCOS = userCOS;
+  if (parcelArea > 0 && buildingArea > 0) {
+    computedCOS = (buildingArea * floors) / parcelArea;
+  }
+  if (computedCOS > rules.maxCOS) {
+    issues.push(`COS exceeds limit for ${zoneName} (${computedCOS.toFixed(2)} vs max ${rules.maxCOS})`);
+  }
+
+  const isCompliant = issues.length === 0;
+
+  return {
+    isCompliant,
+    zoneUsed: zoneName,
+    rulesApplied: rules,
+    badgeHTML: isCompliant 
+      ? `<span style="background:#2ecc71; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Compliant (${zoneName})</span>`
+      : `<span style="background:#e74c3c; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Non-Compliant (${zoneName})</span>`,
+    issuesList: issues
+  };
+}
+
 // 2. Initialize Leaflet Map (Centered over Yaoundé, Cameroon)
 const map = L.map('map', {
   zoomControl: true,
@@ -222,6 +293,7 @@ function renderTableAndMap(data) {
     `;
     
     const permitGroup = L.featureGroup();
+    const compliance = checkZoningCompliance(record);
 
     // Render Parcel Geometry with "Parcel" Popup Header
     if (record.parcel_geom) {
@@ -235,6 +307,7 @@ function renderTableAndMap(data) {
           <strong style="color: #0284c7; font-size: 14px;">Parcel</strong><br>
           <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
           <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
           <strong>Center UTM X:</strong> ${utmParcel.x} m E<br>
           <strong>Center UTM Y:</strong> ${utmParcel.y} m N<br><br>
           <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
@@ -255,6 +328,7 @@ function renderTableAndMap(data) {
           <strong style="color: red; font-size: 14px;">Building Permit</strong><br>
           <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
           <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Zoning Compliance:</strong> ${compliance.badgeHTML}<br>
           <strong>Center UTM X:</strong> ${utmBuilding.x} m E<br>
           <strong>Center UTM Y:</strong> ${utmBuilding.y} m N<br><br>
           <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
@@ -275,6 +349,7 @@ function renderTableAndMap(data) {
           <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
           <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
           <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
           <strong>Center UTM X:</strong> ${utmCombined.x} m E<br>
           <strong>Center UTM Y:</strong> ${utmCombined.y} m N<br><br>
           <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
@@ -320,6 +395,11 @@ function showDetails(index) {
   if (modalTitle) modalTitle.innerText = `Building Permit Details: ${r.permit_number || 'N/A'}`;
 
   const vertices = getAllProjectedCoordinates(r);
+  const compliance = checkZoningCompliance(r);
+
+  const issuesMarkup = compliance.issuesList.length > 0 
+    ? compliance.issuesList.map(issue => `<li style="color:#e74c3c; margin-bottom:2px; font-weight:500;">⚠️ ${issue}</li>`).join('')
+    : `<li style="color:#2ecc71; font-weight:bold; list-style-type:none;">✓ Passed all zoning rules for ${compliance.zoneUsed}</li>`;
 
   const renderTable = (points, title) => {
     if (!points || points.length === 0) return `<div class="details-item" style="grid-column: span 2;"><span>${title}</span>N/A</div>`;
@@ -352,6 +432,15 @@ function showDetails(index) {
 
   if (modalBody) {
     modalBody.innerHTML = `
+      <div class="details-section" style="background:#0f172a; color:white; padding:6px 8px; font-weight:bold; border-radius:4px;">Zoning & Urban Planning Compliance</div>
+      <div class="details-item"><span>Status (${compliance.zoneUsed})</span>${compliance.badgeHTML}</div>
+      <div class="details-item" style="grid-column: span 2;">
+        <span>Regulatory Diagnosis</span>
+        <ul style="margin: 4px 0 0 16px; padding:0; font-size:12px;">
+          ${issuesMarkup}
+        </ul>
+      </div>
+
       <div class="details-section">All Spatial Vertices (EPSG:32632 / UTM Zone 32N)</div>
       ${renderTable(vertices.parcel, 'Parcel Boundary Vertices')}
       ${renderTable(vertices.building, 'Building Footprint Vertices')}
@@ -396,7 +485,21 @@ function closeModal() {
   if (detailModal) detailModal.style.display = 'none';
 }
 
-// 6. Toggle Buttons UI Logic for Switching Search Bars
+// 6. Zone Info Inspector Listener (For HTML Zone Select Tool)
+function displayZoneInfo(selectedZone) {
+  const rules = ZONING_RULES[selectedZone] || ZONING_RULES['Default'];
+  const infoDisplay = document.getElementById('zone-info-display');
+  if (infoDisplay) {
+    infoDisplay.innerHTML = `
+      Max Height: <strong>${rules.maxHeightM}m</strong> | 
+      Max Floors: <strong>${rules.maxFloors}</strong> | 
+      Max CES: <strong>${rules.maxCES * 100}%</strong> | 
+      Max COS: <strong>${rules.maxCOS}</strong>
+    `;
+  }
+}
+
+// 7. Toggle Buttons UI Logic for Switching Search Bars
 const togglePermitBtn = document.getElementById('togglePermitBtn');
 const toggleTrackerBtn = document.getElementById('toggleTrackerBtn');
 const permitSearchBox = document.getElementById('permitSearchBox');
@@ -508,7 +611,7 @@ if (trackSearchInput) {
             addWaypoints: false
           }).addTo(map);
 
-          map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
+          map.fitBounds(bounds, { padding: [20, 20], maxZoom: 19 });
         }
       }, (error) => {
         alert("Unable to retrieve your GPS location. Please check phone settings.");
