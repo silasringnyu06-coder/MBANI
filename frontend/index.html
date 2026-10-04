@@ -23,6 +23,28 @@
     .mode-selector { display: flex; gap: 10px; }
     .mode-btn { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
     
+    .btn-toggle-all {
+      background-color: #0284c7;
+      color: #ffffff;
+      border: none;
+      padding: 12px 16px;
+      font-size: 14px;
+      font-weight: bold;
+      border-radius: 6px;
+      cursor: pointer;
+      transition: background-color 0.2s ease, transform 0.1s ease;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-toggle-all:hover {
+      background-color: #0369a1;
+    }
+    .btn-toggle-all.active {
+      background-color: #dc2626;
+    }
+
     .search-section { width: 100%; }
     .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; box-sizing: border-box; }
     .search-box:focus { border-color: #1e293b; }
@@ -112,6 +134,11 @@
     <div class="mode-selector">
       <button id="togglePermitBtn" class="mode-btn" style="background: #0f172a; color: white;">📋 Permit & Parcel Search</button>
       <button id="toggleTrackerBtn" class="mode-btn" style="background: #e2e8f0; color: #333;">📍 GPS House Tracker</button>
+      
+      <!-- Global Map Toggle Button -->
+      <button id="toggleAllGeomBtn" class="btn-toggle-all" onclick="toggleAllPermitsOnMap()">
+        🌐 Show All Parcels & Footprints
+      </button>
     </div>
 
     <!-- Search Section 1: General Permit & Parcel Filter -->
