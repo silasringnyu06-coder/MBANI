@@ -1,7 +1,8 @@
-// ===== 1 & 1.1 Spatial Projections, Zoning Engine & Parsing Utilities =====
+// 1. Register Spatial Projection Definitions (UTM Zone 32N & WGS84)
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
 
+// 1.1 Zoning Rules Configuration by Arrondissement / District
 const ZONING_RULES = {
   'Yaoundé 1': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
   'Yaoundé 2': { maxCES: 0.70, maxCOS: 2.5, maxFloors: 5, maxHeightM: 15.0 },
@@ -13,43 +14,59 @@ const ZONING_RULES = {
   'Default':   { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 }
 };
 
+/**
+ * Dynamic Urban Planning Compliance Engine
+ */
 function checkZoningCompliance(record) {
-  const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
-  const rules = ZONING_RULES[zoneName] || ZONING_RULES.Default;
   const issues = [];
+  const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
+  const rules = ZONING_RULES[zoneName] || ZONING_RULES['Default'];
 
   const parcelArea = parseFloat(record.cadastral_area || 0);
   const buildingArea = parseFloat(record.area_sq_m || 0);
   const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
   const heightM = parseFloat(record.height_m || 0);
+  const userCES = parseFloat(record.ces || 0);
+  const userCOS = parseFloat(record.cos || 0);
 
   if (heightM > 0 && heightM > rules.maxHeightM) {
     issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
   }
+
   if (floors > rules.maxFloors) {
     issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
   }
 
-  const computedCES = (parcelArea > 0 && buildingArea > 0) ? (buildingArea / parcelArea) : parseFloat(record.ces || 0);
+  let computedCES = userCES;
+  if (parcelArea > 0 && buildingArea > 0) {
+    computedCES = buildingArea / parcelArea;
+  }
   if (computedCES > rules.maxCES) {
-    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${rules.maxCES * 100}%)`);
+    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${(rules.maxCES * 100)}%)`);
   }
 
-  const computedCOS = (parcelArea > 0 && buildingArea > 0) ? ((buildingArea * floors) / parcelArea) : parseFloat(record.cos || 0);
+  let computedCOS = userCOS;
+  if (parcelArea > 0 && buildingArea > 0) {
+    computedCOS = (buildingArea * floors) / parcelArea;
+  }
   if (computedCOS > rules.maxCOS) {
     issues.push(`COS exceeds limit for ${zoneName} (${computedCOS.toFixed(2)} vs max ${rules.maxCOS})`);
   }
 
   const isCompliant = issues.length === 0;
+
   return {
     isCompliant,
     zoneUsed: zoneName,
     rulesApplied: rules,
-    badgeHTML: `<span style="background:${isCompliant ? '#2ecc71' : '#e74c3c'}; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">${isCompliant ? 'Compliant' : 'Non-Compliant'} (${zoneName})</span>`,
+    badgeHTML: isCompliant 
+      ? `<span style="background:#2ecc71; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Compliant (${zoneName})</span>`
+      : `<span style="background:#e74c3c; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Non-Compliant (${zoneName})</span>`,
     issuesList: issues
   };
 }
 
+// Helper: Safely parse JSON geometry if received as String
 function parseGeom(geom) {
   if (!geom) return null;
   if (typeof geom === 'string') {
