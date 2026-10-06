@@ -3,145 +3,164 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Building Permit Dashboard - MBANI WebGIS</title>
+  <title>MBANI WebGIS - Building Permit & Land Administration Dashboard</title>
   
   <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  
   <!-- Leaflet Routing Machine CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
 
   <style>
+    :root {
+      --primary: #0f172a;
+      --primary-hover: #1e293b;
+      --accent: #2563eb;
+      --bg-main: #f8fafc;
+      --card-bg: #ffffff;
+      --border-color: #cbd5e1;
+      --text-main: #1e293b;
+      --text-muted: #64748b;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f8; color: #333; }
+    body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; background-color: var(--bg-main); color: var(--text-main); line-height: 1.5; }
     
-    header { background-color: #1e293b; color: #fff; padding: 15px 20px; text-align: center; }
+    /* Header */
+    header { background-color: var(--primary); color: #fff; padding: 18px 24px; text-align: center; box-shadow: 0 2px 8px rgba(0,0,0,0.15); }
+    header h1 { font-size: 22px; font-weight: 700; letter-spacing: 0.5px; }
+    header p { font-size: 13px; color: #94a3b8; margin-top: 4px; }
+
+    .container { display: flex; flex-direction: column; gap: 16px; padding: 20px; max-width: 1440px; margin: 0 auto; }
     
-    .container { display: flex; flex-direction: column; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
-    
-    /* Mode Toggle & Search Styles */
-    .mode-selector { display: flex; gap: 10px; }
-    .mode-btn { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
+    /* Mode Selection Toggle Buttons */
+    .mode-selector { display: flex; gap: 10px; width: 100%; }
+    .mode-btn { flex: 1; padding: 12px 16px; cursor: pointer; border: none; border-radius: 6px; font-weight: 600; font-size: 14px; transition: all 0.2s ease; }
     
     .btn-toggle-all {
       background-color: #0284c7;
       color: #ffffff;
       border: none;
-      padding: 12px 16px;
+      padding: 12px 18px;
       font-size: 14px;
-      font-weight: bold;
+      font-weight: 600;
       border-radius: 6px;
       cursor: pointer;
-      transition: background-color 0.2s ease, transform 0.1s ease;
+      transition: all 0.2s ease;
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      gap: 6px;
+      gap: 8px;
     }
-    .btn-toggle-all:hover {
-      background-color: #0369a1;
-    }
-    .btn-toggle-all.active {
-      background-color: #dc2626;
-    }
+    .btn-toggle-all:hover { background-color: #0369a1; }
+    .btn-toggle-all.active { background-color: #dc2626; }
 
+    /* Search Input Sections */
     .search-section { width: 100%; }
-    .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; box-sizing: border-box; }
-    .search-box:focus { border-color: #1e293b; }
-    
-    #track-search-input { border-left: 4px solid #2563eb; }
+    .search-box { width: 100%; padding: 12px 16px; font-size: 14px; border: 1px solid var(--border-color); border-radius: 6px; outline: none; transition: border-color 0.2s, box-shadow 0.2s; background: var(--card-bg); }
+    .search-box:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.15); }
+    #track-search-input { border-left: 5px solid var(--accent); }
 
-    /* Zone Selector Toolbar */
+    /* Zone Toolbar */
     .zone-toolbar {
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 12px;
-      background: #ffffff;
-      padding: 10px 15px;
+      background: var(--card-bg);
+      padding: 10px 16px;
       border-radius: 6px;
-      border: 1px solid #cbd5e1;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+      border: 1px solid var(--border-color);
     }
+    .zone-label { font-weight: 600; font-size: 13px; color: var(--text-main); display: flex; align-items: center; gap: 6px; }
     .zone-select {
       padding: 8px 12px;
-      font-size: 14px;
+      font-size: 13px;
       border-radius: 4px;
-      border: 1px solid #cbd5e1;
+      border: 1px solid var(--border-color);
       background: #f8fafc;
       outline: none;
       cursor: pointer;
+      font-weight: 500;
     }
     .zone-info-banner {
       font-size: 13px;
       color: #334155;
-      font-family: monospace;
+      font-family: 'Consolas', 'Courier New', monospace;
+      background: #f1f5f9;
+      padding: 6px 12px;
+      border-radius: 4px;
+      border-left: 3px solid #0284c7;
+      flex: 1;
+      min-width: 280px;
     }
 
-    /* Map Layout Flex Wrapper */
-    .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
-    .map-wrapper { position: relative; flex: 1; }
-    #map { height: 480px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+    /* Map Layout */
+    .map-layout-wrapper { position: relative; width: 100%; }
+    .map-wrapper { position: relative; width: 100%; }
+    #map { height: 500px; width: 100%; border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08); border: 1px solid var(--border-color); }
 
     .coord-banner {
       position: absolute;
-      bottom: 10px;
-      right: 10px;
+      bottom: 12px;
+      right: 12px;
       z-index: 1000;
-      background: rgba(15, 23, 42, 0.85);
+      background: rgba(15, 23, 42, 0.9);
       color: #fff;
-      padding: 6px 12px;
+      padding: 6px 14px;
       font-size: 12px;
       border-radius: 4px;
-      font-family: monospace;
+      font-family: 'Consolas', 'Courier New', monospace;
       pointer-events: none;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+      box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+      letter-spacing: 0.3px;
     }
-    
-    /* Leaflet Routing Machine Panel Custom Overrides */
+
+    /* Leaflet Routing Machine Panel Overrides */
     .leaflet-routing-container {
       max-height: 280px;
       overflow-y: auto;
       background-color: #ffffff !important;
-      opacity: 0.95;
+      opacity: 0.96;
       border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.2);
       font-size: 12px;
       color: #1e293b;
+      border: 1px solid var(--border-color);
     }
 
-    .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); max-height: 400px; }
+    /* Table Container */
+    .table-container { overflow-x: auto; background: var(--card-bg); border-radius: 8px; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); max-height: 420px; border: 1px solid var(--border-color); }
     table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
-    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; cursor: pointer; user-select: none; }
-    th:hover { background-color: #1e293b; }
+    th, td { padding: 12px 16px; border-bottom: 1px solid #f1f5f9; font-size: 13.5px; }
+    th { background-color: var(--primary); color: #fff; text-transform: uppercase; font-size: 11.5px; letter-spacing: 0.6px; position: sticky; top: 0; z-index: 10; cursor: pointer; user-select: none; font-weight: 700; }
+    th:hover { background-color: var(--primary-hover); }
     tr:nth-child(even) { background-color: #f8fafc; }
-    tr:hover { background-color: #e2e8f0; cursor: pointer; }
-    
-    .status-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; display: inline-block; }
-    .status-approved { background: #dcfce7; color: #166534; }
-    .status-pending { background: #fef9c3; color: #854d0e; }
-    .status-rejected { background: #fee2e2; color: #991b1b; }
+    tr:hover { background-color: #f1f5f9; cursor: pointer; }
 
-    .btn-details { background: #0f172a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
+    /* Action Buttons */
+    .btn-details { background: var(--primary); color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; font-weight: 600; margin-right: 4px; transition: background 0.2s ease; }
     .btn-details:hover { background: #334155; }
 
-    .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
-    .modal-content { background: #fff; width: 92%; max-width: 850px; border-radius: 8px; padding: 25px; max-height: 88vh; overflow-y: auto; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-    .close-btn { position: absolute; right: 20px; top: 15px; font-size: 24px; cursor: pointer; font-weight: bold; color: #64748b; }
-    .close-btn:hover { color: #0f172a; }
+    /* Modal Styling */
+    .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(15, 23, 42, 0.6); justify-content: center; align-items: center; backdrop-filter: blur(2px); }
+    .modal-content { background: var(--card-bg); width: 92%; max-width: 880px; border-radius: 10px; padding: 24px; max-height: 88vh; overflow-y: auto; position: relative; box-shadow: 0 12px 32px rgba(0,0,0,0.25); }
+    .close-btn { position: absolute; right: 20px; top: 16px; font-size: 24px; cursor: pointer; font-weight: bold; color: var(--text-muted); transition: color 0.2s ease; }
+    .close-btn:hover { color: var(--primary); }
     
-    .details-item { background: #f8fafc; padding: 10px; border-radius: 6px; font-size: 14px; border: 1px solid #e2e8f0; }
-    .details-item span { display: block; font-size: 12px; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }
-    .details-section { grid-column: span 2; font-weight: bold; font-size: 16px; margin-top: 15px; border-bottom: 2px solid #0f172a; padding-bottom: 4px; color: #0f172a; }
+    .details-item { background: #f8fafc; padding: 10px 12px; border-radius: 6px; font-size: 13px; border: 1px solid var(--border-color); }
+    .details-item span { display: block; font-size: 11px; color: var(--text-muted); margin-bottom: 2px; text-transform: uppercase; font-weight: 700; letter-spacing: 0.4px; }
+    .details-section { grid-column: span 2; font-weight: 700; font-size: 14px; margin-top: 12px; border-bottom: 2px solid var(--primary); padding-bottom: 4px; color: var(--primary); }
   </style>
 </head>
 <body>
 
   <header>
     <h1>MBANI WebGIS - Building Permit & Land Administration Dashboard</h1>
+    <p>Spatial Compliance Verification & Urban Land Monitoring System | Yaoundé, Cameroon</p>
   </header>
 
   <div class="container">
+    
     <!-- Mode Selection Toggle Buttons -->
     <div class="mode-selector">
       <button id="togglePermitBtn" class="mode-btn" style="background: #0f172a; color: white;">📋 Permit & Parcel Search</button>
@@ -155,17 +174,19 @@
 
     <!-- Search Section 1: General Permit & Parcel Filter -->
     <div id="permitSearchBox" class="search-section">
-      <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant, Land Title..." />
+      <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant Name, Land Title, Arrondissement..." />
     </div>
 
     <!-- Search Section 2: GPS Tracker & Distance Calculation -->
     <div id="trackerSearchBox" class="search-section" style="display: none;">
-      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name and press Enter to trace road route..." />
+      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name and press Enter to trace live GPS route..." />
     </div>
 
     <!-- Urban Zoning Regulations Inspector Toolbar -->
     <div class="zone-toolbar">
-      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
+      <div class="zone-label">
+        <span>🏛️ Inspect Zoning Limits:</span>
+      </div>
       <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
         <option value="Yaoundé 1">Yaoundé 1</option>
         <option value="Yaoundé 2">Yaoundé 2</option>
@@ -181,14 +202,15 @@
       </div>
     </div>
 
-    <!-- Map Layout Wrapper -->
+    <!-- Map Container Wrapper -->
     <div class="map-layout-wrapper">
       <div class="map-wrapper">
         <div id="map"></div>
-        <div id="coord-display" class="coord-banner">UTM Zone 32N (EPSG:32632) | Move cursor on map</div>
+        <div id="coord-display" class="coord-banner">UTM Zone 32N (EPSG:32632) | Move cursor on map to inspect coordinates</div>
       </div>
     </div>
 
+    <!-- Permit & Parcel Records Table -->
     <div class="table-container">
       <table>
         <thead>
@@ -207,23 +229,24 @@
         </tbody>
       </table>
     </div>
+
   </div>
 
-  <div id="detail-modal" class="modal">
+  <!-- Inspection Modal for Vertex Coordinates & Zoning Diagnostics -->
+  <div id="detail-modal" class="modal" onclick="if(event.target===this) closeModal()">
     <div class="modal-content">
       <span class="close-btn" onclick="closeModal()">&times;</span>
-      <h2 id="modal-title" style="margin-bottom:15px; color:#0f172a;">Building Permit & Spatial Details</h2>
+      <h2 id="modal-title" style="margin-bottom:15px; color:var(--primary); font-size:18px;">Building Permit & Spatial Details</h2>
       <div id="modal-body" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
     </div>
   </div>
 
-  <!-- Leaflet JS -->
+  <!-- Third-party Map & Geospatial Libraries -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <!-- Leaflet Routing Machine JS -->
   <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
-  <!-- Proj4JS for Projection Conversion -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
-  <!-- Application JS -->
+  
+  <!-- Main Application Script -->
   <script src="app.js"></script>
 </body>
 </html>
