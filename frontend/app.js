@@ -1,8 +1,7 @@
-// 1. Register Spatial Projection Definitions (UTM Zone 32N & WGS84)
+// ===== 1 & 1.1 Spatial Projections, Zoning Engine & Parsing Utilities =====
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
 
-// 1.1 Zoning Rules Configuration by Arrondissement / District
 const ZONING_RULES = {
   'Yaoundé 1': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
   'Yaoundé 2': { maxCES: 0.70, maxCOS: 2.5, maxFloors: 5, maxHeightM: 15.0 },
@@ -14,59 +13,43 @@ const ZONING_RULES = {
   'Default':   { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 }
 };
 
-/**
- * Dynamic Urban Planning Compliance Engine
- */
 function checkZoningCompliance(record) {
-  const issues = [];
   const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
-  const rules = ZONING_RULES[zoneName] || ZONING_RULES['Default'];
+  const rules = ZONING_RULES[zoneName] || ZONING_RULES.Default;
+  const issues = [];
 
   const parcelArea = parseFloat(record.cadastral_area || 0);
   const buildingArea = parseFloat(record.area_sq_m || 0);
   const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
   const heightM = parseFloat(record.height_m || 0);
-  const userCES = parseFloat(record.ces || 0);
-  const userCOS = parseFloat(record.cos || 0);
 
   if (heightM > 0 && heightM > rules.maxHeightM) {
     issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
   }
-
   if (floors > rules.maxFloors) {
     issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
   }
 
-  let computedCES = userCES;
-  if (parcelArea > 0 && buildingArea > 0) {
-    computedCES = buildingArea / parcelArea;
-  }
+  const computedCES = (parcelArea > 0 && buildingArea > 0) ? (buildingArea / parcelArea) : parseFloat(record.ces || 0);
   if (computedCES > rules.maxCES) {
-    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${(rules.maxCES * 100)}%)`);
+    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${rules.maxCES * 100}%)`);
   }
 
-  let computedCOS = userCOS;
-  if (parcelArea > 0 && buildingArea > 0) {
-    computedCOS = (buildingArea * floors) / parcelArea;
-  }
+  const computedCOS = (parcelArea > 0 && buildingArea > 0) ? ((buildingArea * floors) / parcelArea) : parseFloat(record.cos || 0);
   if (computedCOS > rules.maxCOS) {
     issues.push(`COS exceeds limit for ${zoneName} (${computedCOS.toFixed(2)} vs max ${rules.maxCOS})`);
   }
 
   const isCompliant = issues.length === 0;
-
   return {
     isCompliant,
     zoneUsed: zoneName,
     rulesApplied: rules,
-    badgeHTML: isCompliant 
-      ? `<span style="background:#2ecc71; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Compliant (${zoneName})</span>`
-      : `<span style="background:#e74c3c; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">Non-Compliant (${zoneName})</span>`,
+    badgeHTML: `<span style="background:${isCompliant ? '#2ecc71' : '#e74c3c'}; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">${isCompliant ? 'Compliant' : 'Non-Compliant'} (${zoneName})</span>`,
     issuesList: issues
   };
 }
 
-// Helper: Safely parse JSON geometry if received as String
 function parseGeom(geom) {
   if (!geom) return null;
   if (typeof geom === 'string') {
@@ -120,8 +103,8 @@ let isShowingAllGeometries = false;
 // Routing control & tracking layer group
 let trackingLayerGroup = L.layerGroup().addTo(map);
 let currentRoutingControl = null;
-let activeWatchId = null;     // Continuous geolocation watch ID
-let liveUserMarker = null;    // Dynamic GPS marker instance
+let activeWatchId = null;     
+let liveUserMarker = null;    
 
 // Sorting state trackers
 let currentSortColumn = null;
@@ -191,7 +174,6 @@ function getWGS84Centroid(rawGeom) {
       const avgX = sumX / count;
       const avgY = sumY / count;
 
-      // Auto-detect UTM projected coordinates (EPSG:32632) vs WGS84
       if (Math.abs(avgX) > 180 || Math.abs(avgY) > 90) {
         const wgs = proj4("EPSG:32632", "EPSG:4326", [avgX, avgY]);
         return { lng: wgs[0], lat: wgs[1] };
@@ -668,7 +650,6 @@ if (searchInput) {
 
     renderTableAndMap(filtered);
 
-    // Auto-zoom onto target footprint if search yields exactly 1 result
     if (filtered.length === 1) {
       const matchKey = (filtered[0].permit_id || filtered[0].permit_number).toString();
       togglePermitOnMap(matchKey);
@@ -685,13 +666,11 @@ if (trackSearchInput) {
       const query = e.target.value.trim().toLowerCase();
       if (!query) return;
 
-      // Stop any existing live geolocation watcher
       if (activeWatchId !== null) {
         navigator.geolocation.clearWatch(activeWatchId);
         activeWatchId = null;
       }
 
-      // Clear previous tracking layers & controls
       trackingLayerGroup.clearLayers();
       liveUserMarker = null;
 
@@ -700,7 +679,6 @@ if (trackSearchInput) {
         currentRoutingControl = null;
       }
 
-      // Reset "Show All" state if active to prevent state overlap
       if (isShowingAllGeometries) {
         const toggleBtn = document.getElementById('toggleAllGeomBtn');
         isShowingAllGeometries = false;
@@ -710,7 +688,6 @@ if (trackSearchInput) {
         }
       }
 
-      // Find matching record by Permit No, Applicant Name, or Land Title
       const matchedRecord = globalPermitData.find(r => 
         (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
         (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
@@ -735,21 +712,18 @@ if (trackSearchInput) {
         return;
       }
 
-      // Helper function to initialize road route calculation
-      const calculateRoute = (originLat, originLng, isGps = true) => {
-        // User Location Pulsing Marker (Dynamic instance)
+      const calculateRoute = (originLat, originLng) => {
         liveUserMarker = L.circleMarker([originLat, originLng], {
           radius: 10,
-          fillColor: isGps ? '#2563eb' : '#f59e0b',
+          fillColor: '#2563eb',
           color: '#ffffff',
           weight: 3,
           opacity: 1,
           fillOpacity: 0.95
-        }).bindPopup(`<b>${isGps ? '📍 Live GPS Location (Active)' : '📍 Fallback Origin (Hôtel de Ville, Yaoundé)'}</b>`);
+        }).bindPopup(`<b>📍 Your Live GPS Position</b>`);
 
         trackingLayerGroup.addLayer(liveUserMarker);
 
-        // OSRM Road Router Engine with Navigation Instructions Panel
         currentRoutingControl = L.Routing.control({
           waypoints: [
             L.latLng(originLat, originLng),
@@ -781,34 +755,29 @@ if (trackSearchInput) {
         }).addTo(map);
       };
 
-      // Continuous Real-Time Geolocation Tracking (Yango / Navigation Style)
       if (navigator.geolocation) {
         const gpsOptions = {
           enableHighAccuracy: true,
-          timeout: 15000,
+          timeout: 20000,
           maximumAge: 0
         };
 
-        // 1. Initial Position Fix
         navigator.geolocation.getCurrentPosition(
           (position) => {
             const initialLat = position.coords.latitude;
             const initialLng = position.coords.longitude;
 
-            calculateRoute(initialLat, initialLng, true);
+            calculateRoute(initialLat, initialLng);
 
-            // 2. Active Continuous Location Watcher
             activeWatchId = navigator.geolocation.watchPosition(
               (pos) => {
                 const liveLat = pos.coords.latitude;
                 const liveLng = pos.coords.longitude;
 
-                // Move user marker live as you walk or drive
                 if (liveUserMarker) {
                   liveUserMarker.setLatLng([liveLat, liveLng]);
                 }
 
-                // Update route origin waypoint dynamically
                 if (currentRoutingControl) {
                   currentRoutingControl.spliceWaypoints(0, 1, L.latLng(liveLat, liveLng));
                 }
@@ -820,22 +789,19 @@ if (trackSearchInput) {
             );
           },
           (error) => {
-            let errorMsg = "GPS access unavailable. Defaulting route origin to Hôtel de Ville de Yaoundé.";
+            let errorMsg = "Unable to retrieve your GPS location.";
             if (error.code === error.PERMISSION_DENIED) {
-              errorMsg = "GPS access denied. Please enable location permissions on your phone.";
+              errorMsg = "GPS access denied. Please enable location permissions in your browser or phone settings.";
             } else if (error.code === error.TIMEOUT) {
-              errorMsg = "GPS request timed out. Make sure GPS is turned ON on your phone.";
+              errorMsg = "GPS request timed out. Please verify your phone's GPS is turned ON and try again.";
             }
             console.warn("GPS Location Access Failed/Denied:", error);
             alert(errorMsg);
-
-            // Fallback origin: Hôtel de Ville de Yaoundé (3.8666, 11.5167)
-            calculateRoute(3.8666, 11.5167, false);
           },
           gpsOptions
         );
       } else {
-        calculateRoute(3.8666, 11.5167, false);
+        alert("Geolocation is not supported by your browser or device.");
       }
     }
   });
