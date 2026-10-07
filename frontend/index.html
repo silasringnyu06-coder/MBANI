@@ -5,11 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Building Permit Dashboard - MBANI WebGIS</title>
   
-  <!-- Leaflet CSS -->
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   
   <!-- Leaflet Routing Machine CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -23,59 +22,11 @@
     .mode-selector { display: flex; gap: 10px; }
     .mode-btn { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
     
-    .btn-toggle-all {
-      background-color: #0284c7;
-      color: #ffffff;
-      border: none;
-      padding: 12px 16px;
-      font-size: 14px;
-      font-weight: bold;
-      border-radius: 6px;
-      cursor: pointer;
-      transition: background-color 0.2s ease, transform 0.1s ease;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 6px;
-    }
-    .btn-toggle-all:hover {
-      background-color: #0369a1;
-    }
-    .btn-toggle-all.active {
-      background-color: #dc2626;
-    }
-
     .search-section { width: 100%; }
     .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; box-sizing: border-box; }
     .search-box:focus { border-color: #1e293b; }
     
     #track-search-input { border-left: 4px solid #2563eb; }
-
-    /* Zone Selector Toolbar */
-    .zone-toolbar {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      background: #ffffff;
-      padding: 10px 15px;
-      border-radius: 6px;
-      border: 1px solid #cbd5e1;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.05);
-    }
-    .zone-select {
-      padding: 8px 12px;
-      font-size: 14px;
-      border-radius: 4px;
-      border: 1px solid #cbd5e1;
-      background: #f8fafc;
-      outline: none;
-      cursor: pointer;
-    }
-    .zone-info-banner {
-      font-size: 13px;
-      color: #334155;
-      font-family: monospace;
-    }
 
     /* Map Layout Flex Wrapper */
     .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
@@ -97,18 +48,6 @@
       box-shadow: 0 2px 4px rgba(0,0,0,0.2);
     }
     
-    /* Leaflet Routing Machine Panel Custom Overrides */
-    .leaflet-routing-container {
-      max-height: 280px;
-      overflow-y: auto;
-      background-color: #ffffff !important;
-      opacity: 0.95;
-      border-radius: 8px;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
-      font-size: 12px;
-      color: #1e293b;
-    }
-
     .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); max-height: 400px; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
@@ -146,11 +85,6 @@
     <div class="mode-selector">
       <button id="togglePermitBtn" class="mode-btn" style="background: #0f172a; color: white;">📋 Permit & Parcel Search</button>
       <button id="toggleTrackerBtn" class="mode-btn" style="background: #e2e8f0; color: #333;">📍 GPS House Tracker</button>
-      
-      <!-- Global Map Toggle Button -->
-      <button id="toggleAllGeomBtn" class="btn-toggle-all" onclick="toggleAllPermitsOnMap()">
-        🌐 Show All Parcels & Footprints
-      </button>
     </div>
 
     <!-- Search Section 1: General Permit & Parcel Filter -->
@@ -158,34 +92,16 @@
       <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant, Land Title..." />
     </div>
 
-    <!-- Search Section 2: GPS Tracker & Distance Calculation -->
+    <!-- Search Section 2: GPS Tracker & Distance Calculation (Hidden by default) -->
     <div id="trackerSearchBox" class="search-section" style="display: none;">
-      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name or land title and press Enter to trace road route..." />
-    </div>
-
-    <!-- Urban Zoning Regulations Inspector Toolbar -->
-    <div class="zone-toolbar">
-      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
-      <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
-        <option value="Yaoundé 1">Yaoundé 1</option>
-        <option value="Yaoundé 2">Yaoundé 2</option>
-        <option value="Yaoundé 3">Yaoundé 3</option>
-        <option value="Yaoundé 4">Yaoundé 4</option>
-        <option value="Yaoundé 5">Yaoundé 5</option>
-        <option value="Yaoundé 6">Yaoundé 6</option>
-        <option value="Yaoundé 7">Yaoundé 7</option>
-        <option value="Default" selected>Default Rules</option>
-      </select>
-      <div id="zone-info-display" class="zone-info-banner">
-        Max Height: <strong>12.0m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2.0</strong>
-      </div>
+      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
     <!-- Map Layout Wrapper -->
     <div class="map-layout-wrapper">
       <div class="map-wrapper">
         <div id="map"></div>
-        <div id="coord-display" class="coord-banner">UTM Zone 32N (EPSG:32632) | Move cursor on map</div>
+        <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
       </div>
     </div>
 
@@ -198,7 +114,7 @@
             <th onclick="sortTableBy('applicant_email')">Email ↕</th>
             <th onclick="sortTableBy('applicant_phone_number')">Phone ↕</th>
             <th onclick="sortTableBy('parcel_arrondissement')">Arrondissement ↕</th>
-            <th onclick="sortTableBy('quarter')">Building Use ↕</th>
+            <th onclick="sortTableBy('building_use')">Building Use ↕</th>
             <th style="cursor: default;">Actions</th>
           </tr>
         </thead>
@@ -217,13 +133,11 @@
     </div>
   </div>
 
-  <!-- Leaflet JS -->
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Leaflet Routing Machine JS -->
-  <script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
-  <!-- Proj4JS for Projection Conversion -->
+  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+  
   <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
-  <!-- Application JS -->
   <script src="app.js"></script>
 </body>
 </html>
