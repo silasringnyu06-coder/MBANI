@@ -1,281 +1,224 @@
-// ===== 1 & 1.1 Spatial Projections, Zoning Engine & Parsing Utilities =====
+// ================= MBANI WebGIS - app.js =================
+// 1. Projections
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
 
+// 1.1 Zoning rules
 const ZONING_RULES = {
   'Yaoundé 1': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
   'Yaoundé 2': { maxCES: 0.70, maxCOS: 2.5, maxFloors: 5, maxHeightM: 15.0 },
-  'Yaoundé 3': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
+  'Yaoundé 3': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0 },
   'Yaoundé 4': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
   'Yaoundé 5': { maxCES: 0.55, maxCOS: 1.8, maxFloors: 3, maxHeightM: 10.0 },
-  'Yaoundé 6': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
-  'Yaoundé 7': { maxCES: 0.45, maxCOS: 1.2, maxFloors: 2, maxHeightM: 7.5  },
+  'Yaoundé 6': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0 },
+  'Yaoundé 7': { maxCES: 0.45, maxCOS: 1.2, maxFloors: 2, maxHeightM: 7.5 },
   'Default':   { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 }
 };
 
 function checkZoningCompliance(record) {
-  const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
-  const rules = ZONING_RULES[zoneName] || ZONING_RULES.Default;
   const issues = [];
+  const zoneName = record.parcel_arrondissement || record.quartier || 'Default';
+  const rules = ZONING_RULES[zoneName] || ZONING_RULES['Default'];
 
   const parcelArea = parseFloat(record.cadastral_area || 0);
   const buildingArea = parseFloat(record.area_sq_m || 0);
   const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
   const heightM = parseFloat(record.height_m || 0);
+  let ces = parseFloat(record.ces || 0);
+  let cos = parseFloat(record.cos || 0);
 
-  if (heightM > 0 && heightM > rules.maxHeightM) {
+  if (heightM > 0 && heightM > rules.maxHeightM)
     issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
-  }
-  if (floors > rules.maxFloors) {
+  if (floors > rules.maxFloors)
     issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
-  }
 
-  const computedCES = (parcelArea > 0 && buildingArea > 0) ? (buildingArea / parcelArea) : parseFloat(record.ces || 0);
-  if (computedCES > rules.maxCES) {
-    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${rules.maxCES * 100}%)`);
+  if (parcelArea > 0 && buildingArea > 0) {
+    ces = buildingArea / parcelArea;
+    cos = (buildingArea * floors) / parcelArea;
   }
+  if (ces > rules.maxCES)
+    issues.push(`CES exceeds limit for ${zoneName} (${(ces * 100).toFixed(1)}% vs max ${rules.maxCES * 100}%)`);
+  if (cos > rules.maxCOS)
+    issues.push(`COS exceeds limit for ${zoneName} (${cos.toFixed(2)} vs max ${rules.maxCOS})`);
 
-  const computedCOS = (parcelArea > 0 && buildingArea > 0) ? ((buildingArea * floors) / parcelArea) : parseFloat(record.cos || 0);
-  if (computedCOS > rules.maxCOS) {
-    issues.push(`COS exceeds limit for ${zoneName} (${computedCOS.toFixed(2)} vs max ${rules.maxCOS})`);
-  }
-
-  const isCompliant = issues.length === 0;
+  const ok = issues.length === 0;
+  const color = ok ? '#2ecc71' : '#e74c3c';
   return {
-    isCompliant,
+    isCompliant: ok,
     zoneUsed: zoneName,
     rulesApplied: rules,
-    badgeHTML: `<span style="background:${isCompliant ? '#2ecc71' : '#e74c3c'}; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px;">${isCompliant ? 'Compliant' : 'Non-Compliant'} (${zoneName})</span>`,
+    badgeHTML: `<span style="background:${color};color:white;padding:3px 8px;border-radius:4px;font-weight:bold;font-size:11px;">${ok ? 'Compliant' : 'Non-Compliant'} (${zoneName})</span>`,
     issuesList: issues
   };
 }
 
+// ---------- Geometry helpers ----------
 function parseGeom(geom) {
   if (!geom) return null;
-  if (typeof geom === 'string') {
-    try { return JSON.parse(geom); } catch (e) { return null; }
-  }
+  if (typeof geom === 'string') { try { return JSON.parse(geom); } catch (e) { return null; } }
   return geom;
 }
 
-// 2. Initialize Leaflet Map
-const map = L.map('map', {
-  zoomControl: true,
-  fadeAnimation: true
-}).setView([3.848, 11.502], 12);
+// Convert any coordinate array (UTM or WGS84) to WGS84 [lng, lat], recursively
+function reprojectCoords(c) {
+  if (typeof c[0] === 'number' && typeof c[1] === 'number') {
+    return (Math.abs(c[0]) > 180 || Math.abs(c[1]) > 90)
+      ? proj4("EPSG:32632", "EPSG:4326", [c[0], c[1]]) : c;
+  }
+  return c.map(reprojectCoords);
+}
 
-// Google Satellite Imagery
-const googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', {
-  maxZoom: 20,
-  attribution: 'Map data © Google',
-  subdomains: ['0', '1', '2', '3']
-});
+function toWGS84Geom(raw) {
+  const g = parseGeom(raw);
+  if (!g) return null;
+  try {
+    const copy = JSON.parse(JSON.stringify(g));
+    if (copy.type === 'GeometryCollection') {
+      copy.geometries.forEach(x => { x.coordinates = reprojectCoords(x.coordinates); });
+    } else if (copy.coordinates) {
+      copy.coordinates = reprojectCoords(copy.coordinates);
+    }
+    return copy;
+  } catch (e) { return g; }
+}
 
-// Google Hybrid Basemap
-const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', {
-  maxZoom: 20,
-  attribution: 'Map data © Google',
-  subdomains: ['0', '1', '2', '3']
-});
+function firstRing(raw) {
+  const g = parseGeom(raw);
+  if (!g) return null;
+  let c = g.type === 'GeometryCollection' && g.geometries && g.geometries.length
+    ? g.geometries[0].coordinates : g.coordinates;
+  if (!c) return null;
+  while (Array.isArray(c[0]) && Array.isArray(c[0][0])) c = c[0];
+  return c;
+}
 
-// OpenStreetMap Basemap
-const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 19,
-  attribution: '&copy; OpenStreetMap contributors',
-  subdomains: ['a', 'b', 'c']
-});
+function getWGS84Centroid(raw) {
+  try {
+    const ring = firstRing(raw);
+    if (!ring) return null;
+    let sx = 0, sy = 0, n = 0;
+    ring.forEach(p => {
+      if (typeof p[0] === 'number' && typeof p[1] === 'number') { sx += p[0]; sy += p[1]; n++; }
+    });
+    if (!n) return null;
+    const ax = sx / n, ay = sy / n;
+    if (Math.abs(ax) > 180 || Math.abs(ay) > 90) {
+      const w = proj4("EPSG:32632", "EPSG:4326", [ax, ay]);
+      return { lng: w[0], lat: w[1] };
+    }
+    return { lng: ax, lat: ay };
+  } catch (err) { console.warn('Centroid error:', err); return null; }
+}
+
+function getProjectedCentroid(raw) {
+  const c = getWGS84Centroid(raw);
+  if (!c) return { x: 'N/A', y: 'N/A' };
+  const u = proj4("EPSG:4326", "EPSG:32632", [c.lng, c.lat]);
+  return { x: u[0].toFixed(2), y: u[1].toFixed(2) };
+}
+
+function getAllProjectedCoordinates(record) {
+  const project = (raw) => {
+    const ring = firstRing(raw);
+    if (!ring) return [];
+    return ring.map((pt, i) => {
+      if (typeof pt[0] !== 'number' || typeof pt[1] !== 'number') return { index: i + 1, x: 'N/A', y: 'N/A' };
+      if (Math.abs(pt[0]) > 180 || Math.abs(pt[1]) > 90) return { index: i + 1, x: pt[0].toFixed(2), y: pt[1].toFixed(2) };
+      const u = proj4("EPSG:4326", "EPSG:32632", [pt[0], pt[1]]);
+      return { index: i + 1, x: u[0].toFixed(2), y: u[1].toFixed(2) };
+    });
+  };
+  const res = { parcel: [], building: [] };
+  if (record.parcel_geom) res.parcel = project(record.parcel_geom);
+  if (record.building_geom) res.building = project(record.building_geom);
+  if (!res.parcel.length && !res.building.length && record.view_combined_geom)
+    res.parcel = project(record.view_combined_geom);
+  return res;
+}
+
+// ---------- 2. Map ----------
+const map = L.map('map', { zoomControl: true, fadeAnimation: true }).setView([3.848, 11.502], 12);
+
+const googleSatellite = L.tileLayer('https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}', { maxZoom: 20, attribution: 'Map data © Google' });
+const googleHybrid = L.tileLayer('https://mt1.google.com/vt/lyrs=y&x={x}&y={y}&z={z}', { maxZoom: 20, attribution: 'Map data © Google' });
+const openStreetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; OpenStreetMap contributors', subdomains: ['a', 'b', 'c'] });
 
 googleSatellite.addTo(map);
-
-const baseLayers = {
+L.control.layers({
   "Google Satellite": googleSatellite,
   "Google Satellite Hybrid": googleHybrid,
   "OpenStreetMap": openStreetMap
-};
-L.control.layers(baseLayers).addTo(map);
+}).addTo(map);
 
 const geojsonGroup = L.featureGroup().addTo(map);
 let globalPermitData = [];
 const layersMap = {};
-let activePermitLayer = null; 
-let isShowingAllGeometries = false; 
+let activePermitLayer = null;
+let isShowingAllGeometries = false;
 
-// Routing control & tracking layer group
-let trackingLayerGroup = L.layerGroup().addTo(map);
+// Tracking state (declared ONCE)
+const trackingLayerGroup = L.layerGroup().addTo(map);
 let currentRoutingControl = null;
-let activeWatchId = null;     
-let liveUserMarker = null;    
+let activeWatchId = null;
+let liveUserMarker = null;
+let lastRouteFrom = null;
 
-// Sorting state trackers
 let currentSortColumn = null;
 let isAscending = true;
 
-// 3. Live Cursor Location Tracker (UTM Zone 32N coordinates)
-map.on('mousemove', function(e) {
-  const utmCoords = proj4("EPSG:4326", "EPSG:32632", [e.latlng.lng, e.latlng.lat]);
-  const coordDisplay = document.getElementById('coord-display');
-  if (coordDisplay) {
-    coordDisplay.innerText = `UTM Zone 32N (EPSG:32632) | X: ${utmCoords[0].toFixed(2)} m E | Y: ${utmCoords[1].toFixed(2)} m N`;
-  }
+// 3. Cursor UTM coordinates
+map.on('mousemove', (e) => {
+  const u = proj4("EPSG:4326", "EPSG:32632", [e.latlng.lng, e.latlng.lat]);
+  const el = document.getElementById('coord-display');
+  if (el) el.innerText = `UTM Zone 32N (EPSG:32632) | X: ${u[0].toFixed(2)} m E | Y: ${u[1].toFixed(2)} m N`;
 });
 
 function sortTableBy(columnKey) {
-  if (currentSortColumn === columnKey) {
-    isAscending = !isAscending;
-  } else {
-    currentSortColumn = columnKey;
-    isAscending = true;
-  }
+  if (currentSortColumn === columnKey) isAscending = !isAscending;
+  else { currentSortColumn = columnKey; isAscending = true; }
 
   globalPermitData.sort((a, b) => {
-    let valA = (a[columnKey] || '').toString().toLowerCase();
-    let valB = (b[columnKey] || '').toString().toLowerCase();
-
-    if (!isNaN(valA) && !isNaN(valB) && valA !== '' && valB !== '') {
-      valA = parseFloat(valA);
-      valB = parseFloat(valB);
-    }
-
-    if (valA < valB) return isAscending ? -1 : 1;
-    if (valA > valB) return isAscending ? 1 : -1;
+    let A = (a[columnKey] || '').toString().toLowerCase();
+    let B = (b[columnKey] || '').toString().toLowerCase();
+    if (A !== '' && B !== '' && !isNaN(A) && !isNaN(B)) { A = parseFloat(A); B = parseFloat(B); }
+    if (A < B) return isAscending ? -1 : 1;
+    if (A > B) return isAscending ? 1 : -1;
     return 0;
   });
-
   renderTableAndMap(globalPermitData);
 }
 
-/**
- * Robust Centroid Calculation with Projection Auto-Detection (UTM 32N -> WGS84)
- */
-function getWGS84Centroid(rawGeom) {
-  const geojson = parseGeom(rawGeom);
-  if (!geojson) return null;
-  try {
-    let coords = geojson.coordinates;
-    if (geojson.type === 'GeometryCollection' && geojson.geometries && geojson.geometries.length > 0) {
-      coords = geojson.geometries[0].coordinates;
-    }
-    if (!coords) return null;
-
-    while (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-      coords = coords[0];
-    }
-
-    let sumX = 0, sumY = 0, count = 0;
-    for (let i = 0; i < coords.length; i++) {
-      if (typeof coords[i][0] === 'number' && typeof coords[i][1] === 'number') {
-        sumX += coords[i][0];
-        sumY += coords[i][1];
-        count++;
-      }
-    }
-
-    if (count > 0) {
-      const avgX = sumX / count;
-      const avgY = sumY / count;
-
-      if (Math.abs(avgX) > 180 || Math.abs(avgY) > 90) {
-        const wgs = proj4("EPSG:32632", "EPSG:4326", [avgX, avgY]);
-        return { lng: wgs[0], lat: wgs[1] };
-      }
-
-      return { lng: avgX, lat: avgY };
-    }
-  } catch (err) {
-    console.warn('Centroid calculation error:', err);
-  }
-  return null;
-}
-
-function getProjectedCentroid(geojson) {
-  const center = getWGS84Centroid(geojson);
-  if (!center) return { x: 'N/A', y: 'N/A' };
-  const utm = proj4("EPSG:4326", "EPSG:32632", [center.lng, center.lat]);
-  return { x: utm[0].toFixed(2), y: utm[1].toFixed(2) };
-}
-
-function getAllProjectedCoordinates(record) {
-  const result = { parcel: [], building: [] };
-  
-  function extractAndProjectPoints(rawGeom) {
-    const geojson = parseGeom(rawGeom);
-    if (!geojson) return [];
-    try {
-      let coords = geojson.type === 'GeometryCollection' && geojson.geometries.length > 0 
-        ? geojson.geometries[0].coordinates 
-        : geojson.coordinates;
-      if (!coords) return [];
-
-      while (Array.isArray(coords[0]) && Array.isArray(coords[0][0])) {
-        coords = coords[0];
-      }
-
-      return coords.map((pt, i) => {
-        if (typeof pt[0] === 'number' && typeof pt[1] === 'number') {
-          if (Math.abs(pt[0]) > 180 || Math.abs(pt[1]) > 90) {
-            return { index: i + 1, x: pt[0].toFixed(2), y: pt[1].toFixed(2) };
-          }
-          const utm = proj4("EPSG:4326", "EPSG:32632", [pt[0], pt[1]]);
-          return { index: i + 1, x: utm[0].toFixed(2), y: utm[1].toFixed(2) };
-        }
-        return { index: i + 1, x: 'N/A', y: 'N/A' };
-      });
-    } catch (e) {
-      return [];
-    }
-  }
-
-  if (record.parcel_geom) result.parcel = extractAndProjectPoints(record.parcel_geom);
-  if (record.building_geom) result.building = extractAndProjectPoints(record.building_geom);
-  if (result.parcel.length === 0 && result.building.length === 0 && record.view_combined_geom) {
-    result.parcel = extractAndProjectPoints(record.view_combined_geom);
-  }
-  return result;
-}
-
-// 4. Fetch Spatial Data from Backend
+// 4. Load data
 async function loadBuildingPermit(dbSource = 'local') {
   const tableBody = document.getElementById('permit-table-body');
-  if (tableBody) {
-    tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Loading building permit data...</td></tr>`;
-  }
+  if (tableBody) tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;">Loading building permit data...</td></tr>`;
 
-  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1' || window.location.protocol === 'file:';
+  const isLocal = ['localhost', '127.0.0.1'].includes(window.location.hostname) || window.location.protocol === 'file:';
   const baseUrl = isLocal ? 'http://localhost:5000' : 'https://mbani.onrender.com';
-
-  const endpoint = dbSource === 'cloud' 
-    ? `${baseUrl}/api/cloud-building-permit` 
-    : `${baseUrl}/api/building-permit`;
+  const endpoint = dbSource === 'cloud' ? `${baseUrl}/api/cloud-building-permit` : `${baseUrl}/api/building-permit`;
 
   try {
     const response = await fetch(endpoint);
     if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-
     globalPermitData = await response.json();
     renderTableAndMap(globalPermitData);
   } catch (error) {
     console.error('Error fetching data:', error);
-    if (tableBody) {
-      tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center; color: red;">Failed to load data from server. Ensure backend API is active on port 5000.</td></tr>`;
-    }
+    if (tableBody) tableBody.innerHTML = `<tr><td colspan="7" style="text-align:center;color:red;">Failed to load data from server. The server may be waking up (Render free plan), wait 30 seconds and refresh.</td></tr>`;
   }
 }
 
-// 5. Render Data into Table & Prepare Spatial Map Objects
+// 5. Table + map objects
 function renderTableAndMap(data) {
   const tableBody = document.getElementById('permit-table-body');
   if (!tableBody) return;
-  
+
   tableBody.innerHTML = '';
-  
   geojsonGroup.clearLayers();
-  Object.keys(layersMap).forEach(key => delete layersMap[key]);
-  if (activePermitLayer) {
-    map.removeLayer(activePermitLayer);
-    activePermitLayer = null;
-  }
+  Object.keys(layersMap).forEach(k => delete layersMap[k]);
+  activePermitLayer = null;
   isShowingAllGeometries = false;
-  
+
   const toggleAllBtn = document.getElementById('toggleAllGeomBtn');
   if (toggleAllBtn) {
     toggleAllBtn.classList.remove('active');
@@ -300,26 +243,42 @@ function renderTableAndMap(data) {
       <td>${record.parcel_arrondissement || 'N/A'}</td>
       <td>${record.building_use || 'N/A'}</td>
       <td>
-        <button class="btn-details" onclick="event.stopPropagation(); togglePermitOnMap('${permitKey}')">👁️ Show/Hide</button>
-        <button class="btn-details" onclick="event.stopPropagation(); showDetails(${idx})">Details</button>
-      </td>
-    `;
-    
-    row.onclick = () => {
-      togglePermitOnMap(permitKey);
-    };
-    
+        <button class="btn-details" data-act="show">👁️ Show/Hide</button>
+        <button class="btn-details" data-act="details">Details</button>
+      </td>`;
+
+    // Event listeners (safe even if permit keys contain quotes)
+    row.querySelector('[data-act="show"]').addEventListener('click', (e) => { e.stopPropagation(); togglePermitOnMap(permitKey); });
+    row.querySelector('[data-act="details"]').addEventListener('click', (e) => { e.stopPropagation(); showDetails(idx); });
+    row.addEventListener('click', () => togglePermitOnMap(permitKey));
     tableBody.appendChild(row);
   });
 
-  setTimeout(() => {
-    map.invalidateSize();
-  }, 200);
+  setTimeout(() => map.invalidateSize(), 200);
 }
 
-/**
- * Toggle Parcel / Building Footprint On-Click
- */
+function makeLayer(rawGeom, style, title, titleColor, record, compliance, withUtm) {
+  const geom = toWGS84Geom(rawGeom);
+  if (!geom) return null;
+  const layer = L.geoJSON(geom, { style });
+  let utm = '';
+  if (withUtm) {
+    const c = getProjectedCentroid(rawGeom);
+    utm = `<br><strong>UTM X:</strong> ${c.x} m E | <strong>Y:</strong> ${c.y} m N`;
+  }
+  layer.bindPopup(`
+    <div style="font-size:13px;">
+      <strong style="color:${titleColor};font-size:14px;">${title}</strong><br>
+      <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+      <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+      <strong>Compliance:</strong> ${compliance.badgeHTML}${utm}
+    </div>`);
+  return layer;
+}
+
+const PARCEL_STYLE = { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.35 };
+const BUILDING_STYLE = { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.7 };
+
 function togglePermitOnMap(permitKey) {
   const record = layersMap[permitKey];
   if (!record) return;
@@ -329,276 +288,171 @@ function togglePermitOnMap(permitKey) {
     activePermitLayer = null;
     return;
   }
-
   geojsonGroup.clearLayers();
 
-  const permitGroup = L.featureGroup();
+  const group = L.featureGroup();
   const compliance = checkZoningCompliance(record);
 
-  function createGeoJsonLayer(rawGeom, style) {
-    const parsed = parseGeom(rawGeom);
-    if (!parsed) return null;
-
-    let targetGeom = parsed;
-    const centroid = getWGS84Centroid(parsed);
-    if (centroid) {
-      try {
-        const reprojectCoords = (coords) => {
-          if (typeof coords[0] === 'number' && typeof coords[1] === 'number') {
-            if (Math.abs(coords[0]) > 180 || Math.abs(coords[1]) > 90) {
-              return proj4("EPSG:32632", "EPSG:4326", [coords[0], coords[1]]);
-            }
-            return coords;
-          }
-          return coords.map(reprojectCoords);
-        };
-        targetGeom = JSON.parse(JSON.stringify(parsed));
-        targetGeom.coordinates = reprojectCoords(targetGeom.coordinates);
-      } catch (e) {
-        targetGeom = parsed;
-      }
-    }
-
-    return L.geoJSON(targetGeom, { style });
-  }
-
   if (record.parcel_geom) {
-    const parcelLayer = createGeoJsonLayer(record.parcel_geom, { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.35 });
-    if (parcelLayer) {
-      const utmParcel = getProjectedCentroid(record.parcel_geom);
-      parcelLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: #0284c7; font-size: 14px;">Parcel Boundary</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-          <strong>UTM X:</strong> ${utmParcel.x} m E | <strong>Y:</strong> ${utmParcel.y} m N
-        </div>
-      `);
-      parcelLayer.addTo(permitGroup);
-    }
+    const l = makeLayer(record.parcel_geom, PARCEL_STYLE, 'Parcel Boundary', '#0284c7', record, compliance, true);
+    if (l) l.addTo(group);
   }
-
   if (record.building_geom) {
-    const buildingLayer = createGeoJsonLayer(record.building_geom, { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.7 });
-    if (buildingLayer) {
-      const utmBuilding = getProjectedCentroid(record.building_geom);
-      buildingLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: red; font-size: 14px;">Building Footprint</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-          <strong>UTM X:</strong> ${utmBuilding.x} m E | <strong>Y:</strong> ${utmBuilding.y} m N
-        </div>
-      `);
-      buildingLayer.addTo(permitGroup);
-    }
+    const l = makeLayer(record.building_geom, BUILDING_STYLE, 'Building Footprint', 'red', record, compliance, true);
+    if (l) l.addTo(group);
   }
-
   if (!record.parcel_geom && !record.building_geom && record.view_combined_geom) {
-    const combinedLayer = createGeoJsonLayer(record.view_combined_geom, { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.35 });
-    if (combinedLayer) {
-      const utmCombined = getProjectedCentroid(record.view_combined_geom);
-      combinedLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Compliance:</strong> ${compliance.badgeHTML}<br>
-          <strong>UTM X:</strong> ${utmCombined.x} m E | <strong>Y:</strong> ${utmCombined.y} m N
-        </div>
-      `);
-      combinedLayer.addTo(permitGroup);
-    }
+    const l = makeLayer(record.view_combined_geom, { ...PARCEL_STYLE, weight: 2 }, 'Parcel / Building', '#0284c7', record, compliance, true);
+    if (l) l.addTo(group);
   }
 
-  if (permitGroup.getLayers().length > 0) {
-    geojsonGroup.addLayer(permitGroup);
-    activePermitLayer = permitGroup;
+  if (group.getLayers().length > 0) {
+    geojsonGroup.addLayer(group);
+    activePermitLayer = group;
     activePermitLayer.permitKey = permitKey;
-
-    map.fitBounds(permitGroup.getBounds(), { padding: [30, 30], maxZoom: 19, animate: true });
-    permitGroup.openPopup();
+    map.fitBounds(group.getBounds(), { padding: [30, 30], maxZoom: 19, animate: true });
+    group.openPopup();
   }
 }
 
-/**
- * Global Map Toggle: Display/Hide All Loaded Parcels
- */
 function toggleAllPermitsOnMap() {
-  const toggleBtn = document.getElementById('toggleAllGeomBtn');
+  const btn = document.getElementById('toggleAllGeomBtn');
 
   if (isShowingAllGeometries) {
     geojsonGroup.clearLayers();
     activePermitLayer = null;
     isShowingAllGeometries = false;
-    if (toggleBtn) {
-      toggleBtn.classList.remove('active');
-      toggleBtn.innerHTML = '🌐 Show All Parcels & Footprints';
-    }
+    if (btn) { btn.classList.remove('active'); btn.innerHTML = '🌐 Show All Parcels & Footprints'; }
     return;
   }
 
   geojsonGroup.clearLayers();
   activePermitLayer = null;
-
-  const allGroup = L.featureGroup();
+  const all = L.featureGroup();
 
   Object.values(layersMap).forEach(record => {
     const compliance = checkZoningCompliance(record);
-    const parcelGeom = parseGeom(record.parcel_geom);
-    const buildingGeom = parseGeom(record.building_geom);
-
-    if (parcelGeom) {
-      const parcelLayer = L.geoJSON(parcelGeom, { style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 } });
-      parcelLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Compliance:</strong> ${compliance.badgeHTML}
-        </div>
-      `);
-      parcelLayer.addTo(allGroup);
-    }
-
-    if (buildingGeom) {
-      const buildingLayer = L.geoJSON(buildingGeom, { style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.6 } });
-      buildingLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong>Building Footprint</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}
-        </div>
-      `);
-      buildingLayer.addTo(allGroup);
-    }
+    const geoms = [
+      [record.parcel_geom, { ...PARCEL_STYLE, weight: 2, fillOpacity: 0.3 }, 'Parcel Boundary', '#0284c7'],
+      [record.building_geom, { ...BUILDING_STYLE, fillOpacity: 0.6 }, 'Building Footprint', 'red']
+    ];
+    geoms.forEach(([g, style, title, color]) => {
+      if (!g) return;
+      const l = makeLayer(g, style, title, color, record, compliance, false);
+      if (l) l.addTo(all);
+    });
   });
 
-  if (allGroup.getLayers().length > 0) {
-    geojsonGroup.addLayer(allGroup);
-    map.fitBounds(allGroup.getBounds(), { padding: [30, 30], animate: true });
+  if (all.getLayers().length > 0) {
+    geojsonGroup.addLayer(all);
+    map.fitBounds(all.getBounds(), { padding: [30, 30], animate: true });
     isShowingAllGeometries = true;
-    if (toggleBtn) {
-      toggleBtn.classList.add('active');
-      toggleBtn.innerHTML = '❌ Clear All Features';
-    }
+    if (btn) { btn.classList.add('active'); btn.innerHTML = '❌ Clear All Features'; }
   } else {
     alert("No spatial geometries found in the loaded database records.");
   }
 }
 
+// ---------- Details modal ----------
 function showDetails(index) {
   const r = globalPermitData[index];
+  if (!r) return;
   const modalBody = document.getElementById('modal-body');
   const modalTitle = document.getElementById('modal-title');
-
-  if (modalTitle) modalTitle.innerText = `Building Permit Details: ${r.permit_number || 'N/A'}`;
+  if (modalTitle) modalTitle.innerText = `Building Permit Details: ${r.permit_number || r.permit_id || 'N/A'}`;
 
   const vertices = getAllProjectedCoordinates(r);
-  const compliance = checkZoningCompliance(r);
+  const c = checkZoningCompliance(r);
+  const zone = c.zoneUsed.toUpperCase();
 
-  const issuesMarkup = compliance.issuesList.length > 0 
-    ? compliance.issuesList.map(issue => `<li style="color:#e74c3c; margin-bottom:2px; font-weight:500;">⚠️ ${issue}</li>`).join('')
-    : `<li style="color:#2ecc71; font-weight:bold; list-style-type:none;">✓ Passed all zoning rules for ${compliance.zoneUsed}</li>`;
+  const issues = c.issuesList.length
+    ? c.issuesList.map(i => `<li style="color:#c0392b;margin:4px 0;">⚠️ ${i}</li>`).join('')
+    : `<li style="color:#16a34a;font-weight:bold;list-style:none;">✓ Passed all zoning rules for ${c.zoneUsed}</li>`;
 
-  const renderTable = (points, title) => {
-    if (!points || points.length === 0) return `<div class="details-item" style="grid-column: span 2;"><span>${title}</span>N/A</div>`;
+  const item = (label, value) =>
+    `<div class="details-item"><span>${label}</span>${value || value === 0 ? value : 'N/A'}</div>`;
+
+  const vTable = (points, title) => {
+    if (!points || !points.length)
+      return `<div class="dx-box"><div class="dx-label">${title}</div><div style="font-size:16px;">N/A</div></div>`;
     return `
-      <div class="details-item" style="grid-column: span 2;">
-        <span>${title} (${points.length} Vertices)</span>
-        <div style="max-height: 130px; overflow-y: auto; margin-top: 6px; border: 1px solid #e2e8f0; border-radius: 4px;">
-          <table style="width: 100%; border-collapse: collapse; font-size: 11px; text-align: left;">
-            <thead style="background-color: #f1f5f9; position: sticky; top: 0;">
-              <tr>
-                <th style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">Point</th>
-                <th style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">UTM Easting (X)</th>
-                <th style="padding: 4px 8px; border-bottom: 1px solid #e2e8f0;">UTM Northing (Y)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${points.map(pt => `
-                <tr>
-                  <td style="padding: 3px 8px; border-bottom: 1px solid #f8fafc;">P${pt.index}</td>
-                  <td style="padding: 3px 8px; border-bottom: 1px solid #f8fafc;">${pt.x} m E</td>
-                  <td style="padding: 3px 8px; border-bottom: 1px solid #f8fafc;">${pt.y} m N</td>
-                </tr>
-              `).join('')}
-            </tbody>
+      <div class="dx-box">
+        <div class="dx-label">${title} (${points.length} Vertices)</div>
+        <div class="dx-scroll">
+          <table class="vtable">
+            <thead><tr><th>Point</th><th>UTM Easting (X)</th><th>UTM Northing (Y)</th></tr></thead>
+            <tbody>${points.map(p => `<tr><td>P${p.index}</td><td>${p.x} m E</td><td>${p.y} m N</td></tr>`).join('')}</tbody>
           </table>
         </div>
-      </div>
-    `;
+      </div>`;
   };
 
   if (modalBody) {
     modalBody.innerHTML = `
-      <div class="details-section" style="background:#0f172a; color:white; padding:6px 8px; font-weight:bold; border-radius:4px;">Zoning Compliance Diagnosis</div>
-      <div class="details-item"><span>Status (${compliance.zoneUsed})</span>${compliance.badgeHTML}</div>
-      <div class="details-item" style="grid-column: span 2;">
-        <span>Regulatory Evaluation</span>
-        <ul style="margin: 4px 0 0 16px; padding:0; font-size:12px;">
-          ${issuesMarkup}
-        </ul>
+      <div class="dx-header">Zoning Compliance Diagnosis</div>
+      <div class="dx-box">
+        <div class="dx-label">Status (${zone})</div>
+        <div class="dx-badge" style="background:${c.isCompliant ? '#2ecc71' : '#e74c3c'};">
+          ${c.isCompliant ? 'Compliant' : 'Non-Compliant'} (${zone})
+        </div>
+      </div>
+      <div class="dx-box">
+        <div class="dx-label">Regulatory Evaluation</div>
+        <ul style="padding-left:18px;font-size:14px;">${issues}</ul>
       </div>
 
-      <div class="details-section">All Spatial Vertices (EPSG:32632 / UTM Zone 32N)</div>
-      ${renderTable(vertices.parcel, 'Parcel Boundary Vertices')}
-      ${renderTable(vertices.building, 'Building Footprint Vertices')}
+      <div class="dx-section">All Spatial Vertices (EPSG:32632 / UTM Zone 32N)</div>
+      ${vTable(vertices.parcel, 'Parcel Boundary Vertices')}
+      ${vTable(vertices.building, 'Building Footprint Vertices')}
 
-      <div class="details-section">Applicant Information</div>
-      <div class="details-item"><span>Full Name</span>${r.applicant_full_name || 'N/A'}</div>
-      <div class="details-item"><span>NUI</span>${r.applicant_nui || 'N/A'}</div>
-      <div class="details-item"><span>Phone</span>${r.applicant_phone_number || r.applicant_phone || 'N/A'}</div>
-      <div class="details-item"><span>Email</span>${r.applicant_email || 'N/A'}</div>
-      <div class="details-item" style="grid-column: span 2;"><span>Address</span>${r.applicant_address || 'N/A'}</div>
+      <div class="dx-section">Applicant Information</div>
+      <div class="dx-grid">
+        ${item('Full Name', r.applicant_full_name)}
+        ${item('Email', r.applicant_email)}
+        ${item('Phone', r.applicant_phone_number || r.applicant_phone)}
+        ${item('NUI', r.applicant_nui)}
+        ${item('Applicant Arrondissement', r.applicant_arrondissement)}
+      </div>
 
-      <div class="details-section">Permit & Parcel Details</div>
-      <div class="details-item"><span>Permit No</span>${r.permit_number || 'N/A'}</div>
-      <div class="details-item"><span>Dossier No</span>${r.no_du_dossier || r.title_rec_no || 'N/A'}</div>
-      <div class="details-item"><span>Status</span>${r.status || r.permit_status || 'N/A'}</div>
-      <div class="details-item"><span>Deposit Date</span>${r.date_de_depot || r.input_database_date || 'N/A'}</div>
-      <div class="details-item"><span>Land Title No</span>${r.land_title_no || r.title_rec_no || 'N/A'}</div>
-      <div class="details-item"><span>Quarter</span>${r.parcel_quarter || r.quartier || 'N/A'}</div>
-      <div class="details-item"><span>Arrondissement</span>${r.parcel_arrondissement || 'N/A'}</div>
-      <div class="details-item"><span>Cadastral Area</span>${r.cadastral_area ? r.cadastral_area + ' m²' : 'N/A'}</div>
-      
-      <div class="details-section">Building Parameters</div>
-      <div class="details-item"><span>Building Use</span>${r.building_use || 'N/A'}</div>
-      <div class="details-item"><span>Floors Above Ground</span>${r.floors_above_ground || 'N/A'}</div>
-      <div class="details-item"><span>Underground Floors</span>${r.floors_underground || 'N/A'}</div>
-      <div class="details-item"><span>Height</span>${r.height_m ? r.height_m + ' m' : 'N/A'}</div>
-      <div class="details-item"><span>COS</span>${r.cos || 'N/A'}</div>
-      <div class="details-item"><span>CES</span>${r.ces || 'N/A'}</div>
-      <div class="details-item"><span>Estimated Cost</span>${r.estimated_cost || 'N/A'}</div>
-      <div class="details-item"><span>Parking Places</span>${r.parking_place || 'N/A'}</div>
-      <div class="details-item"><span>Area</span>${r.area_sq_m ? r.area_sq_m + ' m²' : 'N/A'}</div>
-    `;
+      <div class="dx-section">Parcel Information</div>
+      <div class="dx-grid">
+        ${item('Land Title No', r.land_title_no)}
+        ${item('Title Rec No', r.title_rec_no)}
+        ${item('Parcel Arrondissement', r.parcel_arrondissement)}
+        ${item('Cadastral Area', r.cadastral_area ? r.cadastral_area + ' m²' : '')}
+      </div>
+
+      <div class="dx-section">Building Permit Information</div>
+      <div class="dx-grid">
+        ${item('Permit Number', r.permit_number)}
+        ${item('Building Use', r.building_use)}
+        ${item('Floors Above Ground', r.floors_above_ground)}
+        ${item('Underground Floors', r.floors_underground)}
+        ${item('Height', r.height_m ? r.height_m + ' m' : '')}
+        ${item('COS', r.cos)}
+        ${item('CES', r.ces)}
+        ${item('Estimated Cost', r.estimated_cost)}
+        ${item('Parking Places', r.parking_place)}
+        ${item('Area (sq m)', r.area_sq_m)}
+      </div>`;
   }
-  const detailModal = document.getElementById('detail-modal');
-  if (detailModal) detailModal.style.display = 'flex';
+  const modal = document.getElementById('detail-modal');
+  if (modal) modal.style.display = 'flex';
 }
 
 function closeModal() {
-  const detailModal = document.getElementById('detail-modal');
-  if (detailModal) detailModal.style.display = 'none';
+  const modal = document.getElementById('detail-modal');
+  if (modal) modal.style.display = 'none';
 }
 
-// 6. Zone Info Inspector Listener
+// 6. Zone info inspector
 function displayZoneInfo(selectedZone) {
   const rules = ZONING_RULES[selectedZone] || ZONING_RULES['Default'];
-  const infoDisplay = document.getElementById('zone-info-display');
-  if (infoDisplay) {
-    infoDisplay.innerHTML = `
-      Max Height: <strong>${rules.maxHeightM}m</strong> | 
-      Max Floors: <strong>${rules.maxFloors}</strong> | 
-      Max CES: <strong>${rules.maxCES * 100}%</strong> | 
-      Max COS: <strong>${rules.maxCOS}</strong>
-    `;
-  }
+  const el = document.getElementById('zone-info-display');
+  if (el) el.innerHTML = `Max Height: <strong>${rules.maxHeightM}m</strong> | Max Floors: <strong>${rules.maxFloors}</strong> | Max CES: <strong>${Math.round(rules.maxCES * 100)}%</strong> | Max COS: <strong>${rules.maxCOS}</strong>`;
 }
 
-// 7. Toggle Search Mode Buttons
+// 7. Mode toggle buttons
 const togglePermitBtn = document.getElementById('togglePermitBtn');
 const toggleTrackerBtn = document.getElementById('toggleTrackerBtn');
 const permitSearchBox = document.getElementById('permitSearchBox');
@@ -608,204 +462,140 @@ if (togglePermitBtn && toggleTrackerBtn) {
   togglePermitBtn.addEventListener('click', () => {
     permitSearchBox.style.display = 'block';
     trackerSearchBox.style.display = 'none';
-    
-    togglePermitBtn.style.background = '#0f172a';
-    togglePermitBtn.style.color = 'white';
-    
-    toggleTrackerBtn.style.background = '#e2e8f0';
-    toggleTrackerBtn.style.color = '#333';
+    togglePermitBtn.style.background = '#0f172a'; togglePermitBtn.style.color = 'white';
+    toggleTrackerBtn.style.background = '#e2e8f0'; toggleTrackerBtn.style.color = '#333';
   });
-
   toggleTrackerBtn.addEventListener('click', () => {
     trackerSearchBox.style.display = 'block';
     permitSearchBox.style.display = 'none';
-    
-    toggleTrackerBtn.style.background = '#2563eb';
-    toggleTrackerBtn.style.color = 'white';
-    
-    togglePermitBtn.style.background = '#e2e8f0';
-    togglePermitBtn.style.color = '#333';
+    toggleTrackerBtn.style.background = '#2563eb'; toggleTrackerBtn.style.color = 'white';
+    togglePermitBtn.style.background = '#e2e8f0'; togglePermitBtn.style.color = '#333';
   });
 }
 
-// General Search Input Handler (With Auto-Zoom on Single Match)
+// General search filter
 const searchInput = document.getElementById('search-input');
 if (searchInput) {
   searchInput.addEventListener('input', (e) => {
-    const query = e.target.value.toLowerCase().trim();
-    if (!query) {
-      renderTableAndMap(globalPermitData);
-      return;
-    }
-
-    const filtered = globalPermitData.filter(r => 
-      (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
-      (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
-      (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
-      (r.title_rec_no && r.title_rec_no.toLowerCase().includes(query)) ||
-      (r.applicant_arrondissement && r.applicant_arrondissement.toLowerCase().includes(query)) ||
-      (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query)) ||
-      (r.applicant_nui && r.applicant_nui.toLowerCase().includes(query))
-    );
-
-    renderTableAndMap(filtered);
-
-    if (filtered.length === 1) {
-      const matchKey = (filtered[0].permit_id || filtered[0].permit_number).toString();
-      togglePermitOnMap(matchKey);
-    }
+    const q = e.target.value.toLowerCase();
+    const fields = ['applicant_full_name', 'permit_number', 'land_title_no', 'title_rec_no', 'applicant_arrondissement', 'parcel_arrondissement', 'applicant_nui'];
+    renderTableAndMap(globalPermitData.filter(r => fields.some(f => r[f] && r[f].toString().toLowerCase().includes(q))));
   });
 }
 
-// 8. REAL-TIME LIVE GPS TRACKER & ROAD-FOLLOWING ROUTING ENGINE
+// ================= 8. GPS TRACKER (phone + laptop safe) =================
 const trackSearchInput = document.getElementById('track-search-input');
+const trackGoBtn = document.getElementById('track-go-btn');
 
-if (trackSearchInput) {
-  trackSearchInput.addEventListener('keypress', async function (e) {
-    if (e.key === 'Enter') {
-      const query = e.target.value.trim().toLowerCase();
-      if (!query) return;
+function clearTracking() {
+  trackingLayerGroup.clearLayers();
+  if (currentRoutingControl) { map.removeControl(currentRoutingControl); currentRoutingControl = null; }
+  if (activeWatchId !== null) { navigator.geolocation.clearWatch(activeWatchId); activeWatchId = null; }
+  liveUserMarker = null;
+  lastRouteFrom = null;
+}
 
-      if (activeWatchId !== null) {
-        navigator.geolocation.clearWatch(activeWatchId);
-        activeWatchId = null;
-      }
+function gpsErrorMessage(err) {
+  if (err.code === 1) return "Location permission denied. Allow Location for this site in your browser settings and turn on GPS on your phone. If you opened the link inside WhatsApp/Facebook, open it in Chrome or Safari instead.";
+  if (err.code === 2) return "Your position is unavailable. Turn on GPS / Location and try outdoors.";
+  if (err.code === 3) return "GPS took too long. Please try again.";
+  return "Unable to get your GPS position.";
+}
 
-      trackingLayerGroup.clearLayers();
-      liveUserMarker = null;
+function getTargetLatLng(record) {
+  const geom = record.parcel_geom || record.building_geom || record.view_combined_geom;
+  const c = getWGS84Centroid(geom);
+  return c ? L.latLng(c.lat, c.lng) : null;
+}
 
-      if (currentRoutingControl) {
-        try { map.removeControl(currentRoutingControl); } catch (err) {}
-        currentRoutingControl = null;
-      }
+function drawRoute(from, to) {
+  if (currentRoutingControl) { map.removeControl(currentRoutingControl); currentRoutingControl = null; }
+  currentRoutingControl = L.Routing.control({
+    waypoints: [from, to],
+    routeWhileDragging: false,
+    addWaypoints: false,
+    draggableWaypoints: false,
+    fitSelectedRoutes: false,
+    show: false,
+    createMarker: () => null,
+    lineOptions: { styles: [{ color: '#2563eb', weight: 6, opacity: 0.8 }] }
+  })
+  .on('routingerror', () => {
+    L.polyline([from, to], { color: '#2563eb', weight: 4, dashArray: '8,8' }).addTo(trackingLayerGroup);
+  })
+  .addTo(map);
+}
 
-      if (isShowingAllGeometries) {
-        const toggleBtn = document.getElementById('toggleAllGeomBtn');
-        isShowingAllGeometries = false;
-        if (toggleBtn) {
-          toggleBtn.classList.remove('active');
-          toggleBtn.innerHTML = '🌐 Show All Parcels & Footprints';
-        }
-      }
+function startLiveTracking(target, highAccuracy = true) {
+  if (activeWatchId !== null) navigator.geolocation.clearWatch(activeWatchId);
+  let firstFix = true;
 
-      const matchedRecord = globalPermitData.find(r => 
-        (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
-        (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
-        (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
-        (r.title_rec_no && r.title_rec_no.toLowerCase().includes(query)) ||
-        (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query))
-      );
+  activeWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      const here = L.latLng(pos.coords.latitude, pos.coords.longitude);
 
-      if (!matchedRecord) {
-        alert("No matching building permit, house, or land title record found for: " + query);
-        return;
-      }
-
-      const key = (matchedRecord.permit_id || matchedRecord.permit_number || '').toString();
-      togglePermitOnMap(key);
-
-      const rawTargetGeom = matchedRecord.parcel_geom || matchedRecord.building_geom || matchedRecord.view_combined_geom;
-      const targetCentroid = getWGS84Centroid(rawTargetGeom);
-
-      if (!targetCentroid) {
-        alert("This record does not have valid geometry coordinates to calculate a road route.");
-        return;
-      }
-
-      const calculateRoute = (originLat, originLng) => {
-        liveUserMarker = L.circleMarker([originLat, originLng], {
-          radius: 10,
-          fillColor: '#2563eb',
-          color: '#ffffff',
-          weight: 3,
-          opacity: 1,
-          fillOpacity: 0.95
-        }).bindPopup(`<b>📍 Your Live GPS Position</b>`);
-
-        trackingLayerGroup.addLayer(liveUserMarker);
-
-        currentRoutingControl = L.Routing.control({
-          waypoints: [
-            L.latLng(originLat, originLng),
-            L.latLng(targetCentroid.lat, targetCentroid.lng)
-          ],
-          router: L.Routing.osrmv1({
-            serviceUrl: 'https://router.project-osrm.org/route/v1'
-          }),
-          routeWhileDragging: false,
-          addWaypoints: false,
-          draggableWaypoints: false,
-          fitSelectedRoutes: true,
-          show: true,
-          createMarker: function(i, wp) {
-            if (i === 0) return liveUserMarker;
-            return L.marker(wp.latLng, {
-              title: "Destination Site"
-            }).bindPopup(`
-              <div style="font-size:13px;">
-                <strong style="color:#2563eb;">🎯 Destination</strong><br>
-                <strong>Permit:</strong> ${matchedRecord.permit_number || 'N/A'}<br>
-                <strong>Applicant:</strong> ${matchedRecord.applicant_full_name || 'N/A'}
-              </div>
-            `);
-          },
-          lineOptions: {
-            styles: [{ color: '#2563eb', weight: 6, opacity: 0.85 }]
-          }
-        }).addTo(map);
-      };
-
-      if (navigator.geolocation) {
-        const gpsOptions = {
-          enableHighAccuracy: true,
-          timeout: 20000,
-          maximumAge: 0
-        };
-
-        navigator.geolocation.getCurrentPosition(
-          (position) => {
-            const initialLat = position.coords.latitude;
-            const initialLng = position.coords.longitude;
-
-            calculateRoute(initialLat, initialLng);
-
-            activeWatchId = navigator.geolocation.watchPosition(
-              (pos) => {
-                const liveLat = pos.coords.latitude;
-                const liveLng = pos.coords.longitude;
-
-                if (liveUserMarker) {
-                  liveUserMarker.setLatLng([liveLat, liveLng]);
-                }
-
-                if (currentRoutingControl) {
-                  currentRoutingControl.spliceWaypoints(0, 1, L.latLng(liveLat, liveLng));
-                }
-              },
-              (err) => {
-                console.warn("Live GPS position update failed:", err);
-              },
-              gpsOptions
-            );
-          },
-          (error) => {
-            let errorMsg = "Unable to retrieve your GPS location.";
-            if (error.code === error.PERMISSION_DENIED) {
-              errorMsg = "GPS access denied. Please enable location permissions in your browser or phone settings.";
-            } else if (error.code === error.TIMEOUT) {
-              errorMsg = "GPS request timed out. Please verify your phone's GPS is turned ON and try again.";
-            }
-            console.warn("GPS Location Access Failed/Denied:", error);
-            alert(errorMsg);
-          },
-          gpsOptions
-        );
+      if (!liveUserMarker) {
+        liveUserMarker = L.circleMarker(here, { radius: 9, color: '#fff', weight: 3, fillColor: '#2563eb', fillOpacity: 1 })
+          .bindPopup('📍 You are here').addTo(trackingLayerGroup);
       } else {
-        alert("Geolocation is not supported by your browser or device.");
+        liveUserMarker.setLatLng(here);
       }
-    }
+
+      if (firstFix || !lastRouteFrom || here.distanceTo(lastRouteFrom) > 30) {
+        lastRouteFrom = here;
+        drawRoute(here, target);
+      }
+      if (firstFix) {
+        map.fitBounds(L.latLngBounds([here, target]), { padding: [40, 40], maxZoom: 19 });
+        firstFix = false;
+      }
+    },
+    (err) => {
+      if (err.code === 3 && highAccuracy) { startLiveTracking(target, false); return; }
+      alert(gpsErrorMessage(err));
+    },
+    { enableHighAccuracy: highAccuracy, maximumAge: 5000, timeout: 20000 }
+  );
+}
+
+// Not async: geolocation must be called directly inside the tap (iOS/Android)
+function runTracker() {
+  const query = (trackSearchInput.value || '').trim().toLowerCase();
+  if (!query) return;
+  trackSearchInput.blur();
+
+  if (!('geolocation' in navigator)) { alert("Geolocation is not supported by this browser."); return; }
+
+  // Search the full dataset (not only the filtered table)
+  const record = globalPermitData.find(r =>
+    (r.permit_number && r.permit_number.toLowerCase().includes(query)) ||
+    (r.applicant_full_name && r.applicant_full_name.toLowerCase().includes(query)) ||
+    (r.land_title_no && r.land_title_no.toLowerCase().includes(query)) ||
+    (r.parcel_arrondissement && r.parcel_arrondissement.toLowerCase().includes(query))
+  );
+  if (!record) { alert("No matching permit or house found! (Is the data loaded?)"); return; }
+
+  const target = getTargetLatLng(record);
+  if (!target) { alert("This permit has no geometry to navigate to."); return; }
+
+  clearTracking();
+
+  // Make sure the record is in layersMap, then show it (without toggling it off)
+  const idx = globalPermitData.indexOf(record);
+  const key = (record.permit_id || record.permit_number || idx).toString();
+  layersMap[key] = record;
+  if (!activePermitLayer || activePermitLayer.permitKey !== key) togglePermitOnMap(key);
+
+  L.marker(target).bindPopup('🏠 ' + (record.permit_number || 'Destination')).addTo(trackingLayerGroup);
+  startLiveTracking(target, true);
+}
+
+if (trackGoBtn) trackGoBtn.addEventListener('click', runTracker);
+if (trackSearchInput) {
+  trackSearchInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); runTracker(); }
   });
 }
 
-// Initial Data Load
+// Initial load
 loadBuildingPermit('local');
