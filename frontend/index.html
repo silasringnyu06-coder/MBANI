@@ -97,6 +97,24 @@
       <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
+     <!-- Urban Zoning Regulations Inspector Toolbar -->
+    <div class="zone-toolbar">
+      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
+      <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
+        <option value="Yaoundé 1">Yaoundé 1</option>
+        <option value="Yaoundé 2">Yaoundé 2</option>
+        <option value="Yaoundé 3">Yaoundé 3</option>
+        <option value="Yaoundé 4">Yaoundé 4</option>
+        <option value="Yaoundé 5">Yaoundé 5</option>
+        <option value="Yaoundé 6">Yaoundé 6</option>
+        <option value="Yaoundé 7">Yaoundé 7</option>
+        <option value="Default" selected>Default Rules</option>
+      </select>
+      <div id="zone-info-display" class="zone-info-banner">
+        Max Height: <strong>12.0m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2.0</strong>
+      </div>
+    </div>
+
     <!-- Map Layout Wrapper -->
     <div class="map-layout-wrapper">
       <div class="map-wrapper">
