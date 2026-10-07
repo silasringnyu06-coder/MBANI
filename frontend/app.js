@@ -1,6 +1,73 @@
+// ================= MBANI WebGIS - app.js =================
 // 1. Register Spatial Projection Definitions
 proj4.defs("EPSG:32632", "+proj=utm +zone=32 +datum=WGS84 +units=m +no_defs");
 proj4.defs("EPSG:4326", "+proj=longlat +datum=WGS84 +no_defs");
+
+// 1.1 Zoning rules & compliance logic
+const ZONING_RULES = {
+  'Yaoundé 1': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
+  'Yaoundé 2': { maxCES: 0.70, maxCOS: 2.5, maxFloors: 5, maxHeightM: 15.0 },
+  'Yaoundé 3': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
+  'Yaoundé 4': { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 },
+  'Yaoundé 5': { maxCES: 0.55, maxCOS: 1.8, maxFloors: 3, maxHeightM: 10.0 },
+  'Yaoundé 6': { maxCES: 0.50, maxCOS: 1.5, maxFloors: 3, maxHeightM: 9.0  },
+  'Yaoundé 7': { maxCES: 0.45, maxCOS: 1.2, maxFloors: 2, maxHeightM: 7.5  },
+  'Default':   { maxCES: 0.60, maxCOS: 2.0, maxFloors: 4, maxHeightM: 12.0 }
+};
+
+function checkZoningCompliance(record) {
+  const rawZone = record.parcel_arrondissement || record.quartier || 'Default';
+  let zoneName = 'Default';
+  if (rawZone.match(/1/)) zoneName = 'Yaoundé 1';
+  else if (rawZone.match(/2/)) zoneName = 'Yaoundé 2';
+  else if (rawZone.match(/3/)) zoneName = 'Yaoundé 3';
+  else if (rawZone.match(/4/)) zoneName = 'Yaoundé 4';
+  else if (rawZone.match(/5/)) zoneName = 'Yaoundé 5';
+  else if (rawZone.match(/6/)) zoneName = 'Yaoundé 6';
+  else if (rawZone.match(/7/)) zoneName = 'Yaoundé 7';
+
+  const rules = ZONING_RULES[zoneName] || ZONING_RULES.Default;
+  const issues = [];
+
+  const parcelArea = parseFloat(record.cadastral_area || 0);
+  const buildingArea = parseFloat(record.area_sq_m || 0);
+  const floors = parseInt(record.floors_above_ground || record.floors_above || 1, 10);
+  const heightM = parseFloat(record.height_m || 0);
+
+  if (heightM > 0 && heightM > rules.maxHeightM) {
+    issues.push(`Height exceeds limit for ${zoneName} (${heightM}m vs max ${rules.maxHeightM}m)`);
+  }
+  if (floors > rules.maxFloors) {
+    issues.push(`Floors exceed limit for ${zoneName} (${floors} floors vs max ${rules.maxFloors})`);
+  }
+
+  const computedCES = (parcelArea > 0 && buildingArea > 0) ? (buildingArea / parcelArea) : parseFloat(record.ces || 0);
+  if (computedCES > rules.maxCES) {
+    issues.push(`CES exceeds limit for ${zoneName} (${(computedCES * 100).toFixed(1)}% vs max ${rules.maxCES * 100}%)`);
+  }
+
+  const computedCOS = (parcelArea > 0 && buildingArea > 0) ? ((buildingArea * floors) / parcelArea) : parseFloat(record.cos || 0);
+  if (computedCOS > rules.maxCOS) {
+    issues.push(`COS exceeds limit for ${zoneName} (${computedCOS.toFixed(2)} vs max ${rules.maxCOS})`);
+  }
+
+  const isCompliant = issues.length === 0;
+  return {
+    isCompliant,
+    zoneUsed: zoneName,
+    rulesApplied: rules,
+    badgeHTML: `<span style="background:${isCompliant ? '#2ecc71' : '#e74c3c'}; color:white; padding:3px 8px; border-radius:4px; font-weight:bold; font-size:11px; white-space:nowrap;">${isCompliant ? 'Compliant' : 'Non-Compliant'} (${zoneName})</span>`,
+    issuesList: issues
+  };
+}
+
+function parseGeom(geom) {
+  if (!geom) return null;
+  if (typeof geom === 'string') {
+    try { return JSON.parse(geom); } catch (e) { return null; }
+  }
+  return geom;
+}
 
 // 2. Initialize Leaflet Map (Centered over Yaoundé, Cameroon)
 const map = L.map('map', {
@@ -205,6 +272,7 @@ function renderTableAndMap(data) {
   }
 
   data.forEach((record, idx) => {
+    const compliance = checkZoningCompliance(record);
     const status = (record.status || record.permit_status || '').toLowerCase();
     let badgeClass = 'status-badge status-pending';
     if (status.includes('approv') || status.includes('valide')) badgeClass = 'status-badge status-approved';
@@ -217,7 +285,12 @@ function renderTableAndMap(data) {
       <td>${record.applicant_email || 'N/A'}</td>
       <td>${record.applicant_phone_number || record.applicant_phone || 'N/A'}</td>
       <td>${record.parcel_arrondissement || 'N/A'}</td>
-      <td>${record.building_use || 'N/A'}</td>
+      <td>
+        <div style="display:flex; flex-direction:column; gap:4px; align-items:flex-start;">
+          <span>${record.building_use || 'N/A'}</span>
+          ${compliance.badgeHTML}
+        </div>
+      </td>
       <td><button class="btn-details" onclick="event.stopPropagation(); showDetails(${idx})">View All</button></td>
     `;
     
@@ -225,62 +298,74 @@ function renderTableAndMap(data) {
 
     // Render Parcel Geometry with "Parcel" Popup Header
     if (record.parcel_geom) {
-      const parcelLayer = L.geoJSON(record.parcel_geom, {
-        style: { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.25 }
-      });
+      const parsedParcelGeom = parseGeom(record.parcel_geom);
+      if (parsedParcelGeom) {
+        const parcelLayer = L.geoJSON(parsedParcelGeom, {
+          style: { color: '#00d2ff', weight: 3, fillColor: '#00d2ff', fillOpacity: 0.25 }
+        });
 
-      const utmParcel = getProjectedCentroid(record.parcel_geom);
-      parcelLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: #0284c7; font-size: 14px;">Parcel</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Center UTM X:</strong> ${utmParcel.x} m E<br>
-          <strong>Center UTM Y:</strong> ${utmParcel.y} m N<br><br>
-          <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
-        </div>
-      `);
-      parcelLayer.addTo(permitGroup);
+        const utmParcel = getProjectedCentroid(parsedParcelGeom);
+        parcelLayer.bindPopup(`
+          <div style="font-size:13px;">
+            <strong style="color: #0284c7; font-size: 14px;">Parcel</strong><br>
+            <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+            <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+            <strong>Zoning:</strong> ${compliance.badgeHTML}<br>
+            <strong>Center UTM X:</strong> ${utmParcel.x} m E<br>
+            <strong>Center UTM Y:</strong> ${utmParcel.y} m N<br><br>
+            <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
+          </div>
+        `);
+        parcelLayer.addTo(permitGroup);
+      }
     }
 
     // Render Building Geometry with red "Building Permit" Popup Header
     if (record.building_geom) {
-      const buildingLayer = L.geoJSON(record.building_geom, {
-        style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.65 }
-      });
+      const parsedBuildingGeom = parseGeom(record.building_geom);
+      if (parsedBuildingGeom) {
+        const buildingLayer = L.geoJSON(parsedBuildingGeom, {
+          style: { color: '#ffea00', weight: 2, fillColor: '#ffab00', fillOpacity: 0.65 }
+        });
 
-      const utmBuilding = getProjectedCentroid(record.building_geom);
-      buildingLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: red; font-size: 14px;">Building Permit</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Center UTM X:</strong> ${utmBuilding.x} m E<br>
-          <strong>Center UTM Y:</strong> ${utmBuilding.y} m N<br><br>
-          <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
-        </div>
-      `);
-      buildingLayer.addTo(permitGroup);
+        const utmBuilding = getProjectedCentroid(parsedBuildingGeom);
+        buildingLayer.bindPopup(`
+          <div style="font-size:13px;">
+            <strong style="color: red; font-size: 14px;">Building Permit</strong><br>
+            <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+            <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+            <strong>Zoning:</strong> ${compliance.badgeHTML}<br>
+            <strong>Center UTM X:</strong> ${utmBuilding.x} m E<br>
+            <strong>Center UTM Y:</strong> ${utmBuilding.y} m N<br><br>
+            <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
+          </div>
+        `);
+        buildingLayer.addTo(permitGroup);
+      }
     }
 
     // Fallback combined geometry if separate ones don't exist
     if (!record.parcel_geom && !record.building_geom && record.view_combined_geom) {
-      const combinedLayer = L.geoJSON(record.view_combined_geom, {
-        style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
-      });
+      const parsedCombinedGeom = parseGeom(record.view_combined_geom);
+      if (parsedCombinedGeom) {
+        const combinedLayer = L.geoJSON(parsedCombinedGeom, {
+          style: { color: '#00d2ff', weight: 2, fillColor: '#00d2ff', fillOpacity: 0.3 }
+        });
 
-      const utmCombined = getProjectedCentroid(record.view_combined_geom);
-      combinedLayer.bindPopup(`
-        <div style="font-size:13px;">
-          <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
-          <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
-          <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
-          <strong>Center UTM X:</strong> ${utmCombined.x} m E<br>
-          <strong>Center UTM Y:</strong> ${utmCombined.y} m N<br><br>
-          <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
-        </div>
-      `);
-      combinedLayer.addTo(permitGroup);
+        const utmCombined = getProjectedCentroid(parsedCombinedGeom);
+        combinedLayer.bindPopup(`
+          <div style="font-size:13px;">
+            <strong style="color: #0284c7; font-size: 14px;">Parcel / Building</strong><br>
+            <strong>Permit:</strong> ${record.permit_number || 'N/A'}<br>
+            <strong>Applicant:</strong> ${record.applicant_full_name || 'N/A'}<br>
+            <strong>Zoning:</strong> ${compliance.badgeHTML}<br>
+            <strong>Center UTM X:</strong> ${utmCombined.x} m E<br>
+            <strong>Center UTM Y:</strong> ${utmCombined.y} m N<br><br>
+            <a href="#" onclick="showDetails(${idx}); return false;">View Details</a>
+          </div>
+        `);
+        combinedLayer.addTo(permitGroup);
+      }
     }
 
     if (permitGroup.getLayers().length > 0) {
@@ -320,6 +405,7 @@ function showDetails(index) {
   if (modalTitle) modalTitle.innerText = `Building Permit Details: ${r.permit_number || 'N/A'}`;
 
   const vertices = getAllProjectedCoordinates(r);
+  const compliance = checkZoningCompliance(r);
 
   const renderTable = (points, title) => {
     if (!points || points.length === 0) return `<div class="details-item" style="grid-column: span 2;"><span>${title}</span>N/A</div>`;
@@ -350,8 +436,22 @@ function showDetails(index) {
     `;
   };
 
+  const issuesHTML = compliance.issuesList.length
+    ? compliance.issuesList.map(i => `<li style="color:#c0392b;margin:4px 0;">⚠️ ${i}</li>`).join('')
+    : `<li style="color:#16a34a;font-weight:bold;list-style:none;">✓ Passed all zoning rules for ${compliance.zoneUsed}</li>`;
+
   if (modalBody) {
     modalBody.innerHTML = `
+      <div class="details-section">Zoning Compliance Diagnosis</div>
+      <div class="details-item">
+        <span>Status (${compliance.zoneUsed})</span>
+        <div style="margin-top:4px;">${compliance.badgeHTML}</div>
+      </div>
+      <div class="details-item">
+        <span>Regulatory Evaluation</span>
+        <ul style="padding-left:16px;font-size:13px;margin-top:2px;">${issuesHTML}</ul>
+      </div>
+
       <div class="details-section">All Spatial Vertices (EPSG:32632 / UTM Zone 32N)</div>
       ${renderTable(vertices.parcel, 'Parcel Boundary Vertices')}
       ${renderTable(vertices.building, 'Building Footprint Vertices')}
@@ -509,7 +609,7 @@ if (trackSearchInput) {
           }).addTo(map);
 
           map.fitBounds(bounds, { padding: [50, 50], maxZoom: 18 });
-        }
+        } 
       }, (error) => {
         alert("Unable to retrieve your GPS location. Please check phone settings.");
         console.error(error);
