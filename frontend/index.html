@@ -28,9 +28,11 @@
     
     #track-search-input { border-left: 4px solid #2563eb; }
 
-    .map-wrapper { position: relative; }
+    /* Map Layout Flex Wrapper */
+    .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
+    .map-wrapper { position: relative; flex: 1; }
     #map { height: 480px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
-    
+
     .coord-banner {
       position: absolute;
       bottom: 10px;
@@ -49,7 +51,8 @@
     .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); max-height: 400px; }
     table { width: 100%; border-collapse: collapse; text-align: left; }
     th, td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
-    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; }
+    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; cursor: pointer; user-select: none; }
+    th:hover { background-color: #1e293b; }
     tr:nth-child(even) { background-color: #f8fafc; }
     tr:hover { background-color: #e2e8f0; cursor: pointer; }
     
@@ -94,25 +97,47 @@
       <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
     </div>
 
-    <div class="map-wrapper">
-      <div id="map"></div>
-      <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
+     <!-- Urban Zoning Regulations Inspector Toolbar -->
+    <div class="zone-toolbar">
+      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
+      <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
+        <option value="Yaoundé 1">Yaoundé 1</option>
+        <option value="Yaoundé 2">Yaoundé 2</option>
+        <option value="Yaoundé 3">Yaoundé 3</option>
+        <option value="Yaoundé 4">Yaoundé 4</option>
+        <option value="Yaoundé 5">Yaoundé 5</option>
+        <option value="Yaoundé 6">Yaoundé 6</option>
+        <option value="Yaoundé 7">Yaoundé 7</option>
+        <option value="Default" selected>Default Rules</option>
+      </select>
+      <div id="zone-info-display" class="zone-info-banner">
+        Max Height: <strong>12.0m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2.0</strong>
+      </div>
+    </div>
+
+    <!-- Map Layout Wrapper -->
+    <div class="map-layout-wrapper">
+      <div class="map-wrapper">
+        <div id="map"></div>
+        <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
+      </div>
     </div>
 
     <div class="table-container">
       <table>
         <thead>
           <tr>
-            <th>Permit No</th>
-            <th>Applicant</th>
-            <th>Email</th>
-            <th>Phone</th>
-            <th>Status</th>
-            <th>nui</th>
+            <th onclick="sortTableBy('permit_number')">Permit No ↕</th>
+            <th onclick="sortTableBy('applicant_full_name')">Applicant ↕</th>
+            <th onclick="sortTableBy('applicant_email')">Email ↕</th>
+            <th onclick="sortTableBy('applicant_phone_number')">Phone ↕</th>
+            <th onclick="sortTableBy('parcel_arrondissement')">Arrondissement ↕</th>
+          
+            <th style="cursor: default;">Actions</th>
           </tr>
         </thead>
         <tbody id="permit-table-body">
-          <tr><td colspan="6" style="text-align:center;">Loading building permit data from database...</td></tr>
+          <tr><td colspan="7" style="text-align:center;">Loading building permit data from database...</td></tr>
         </tbody>
       </table>
     </div>
