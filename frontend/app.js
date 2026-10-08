@@ -154,6 +154,11 @@ async function loadBuildingPermit() {
 function sortTableBy(col) {
   asc = sortCol === col ? !asc : true;
   sortCol = col;
+  document.querySelectorAll('th[data-k]').forEach(th => {      // ▲ ascending / ▼ descending beside the active title, ↕ on the others
+    const on = th.dataset.k === col, si = th.querySelector('.si');
+    th.classList.toggle('sorted', on);
+    if (si) si.textContent = on ? (asc ? '▲' : '▼') : '↕';
+  });
   globalPermitData.sort((a, b) => {
     let x = (a[col] || '').toString().toLowerCase(), y = (b[col] || '').toString().toLowerCase();
     if (x !== '' && y !== '' && !isNaN(x) && !isNaN(y)) { x = +x; y = +y; }
