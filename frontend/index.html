@@ -1,161 +1,169 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>Building Permit Dashboard - MBANI WebGIS</title>
-  
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  
-  <!-- Leaflet Routing Machine CSS -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css" />
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Building Permit Dashboard - MBANI WebGIS</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.css">
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: #f4f6f8; color: #333; }
+  header { background: #1e293b; color: #fff; padding: 14px; text-align: center; }
+  header h1 { font-size: 20px; }
+  .container { display: flex; flex-direction: column; gap: 14px; padding: 16px; max-width: 1400px; margin: 0 auto; }
 
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f4f6f8; color: #333; }
-    
-    header { background-color: #1e293b; color: #fff; padding: 15px 20px; text-align: center; }
-    
-    .container { display: flex; flex-direction: column; gap: 20px; padding: 20px; max-width: 1400px; margin: 0 auto; }
-    
-    /* Mode Toggle & Search Styles */
-    .mode-selector { display: flex; gap: 10px; }
-    .mode-btn { flex: 1; padding: 12px; cursor: pointer; border: none; border-radius: 6px; font-weight: bold; font-size: 14px; transition: background 0.2s; }
-    
-    .search-section { width: 100%; }
-    .search-box { width: 100%; padding: 12px 15px; font-size: 15px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; transition: border-color 0.2s; background: #fff; box-sizing: border-box; }
-    .search-box:focus { border-color: #1e293b; }
-    
-    #track-search-input { border-left: 4px solid #2563eb; }
+  button, select { font-size: 14px; border: none; border-radius: 6px; cursor: pointer; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .mode-btn { flex: 1; min-width: 140px; padding: 12px; font-weight: bold; }
+  #toggleAllGeomBtn { background: #0284c7; color: #fff; padding: 12px 14px; font-weight: bold; }
+  #toggleAllGeomBtn.active { background: #dc2626; }
+  select { padding: 10px; background: #fff; border: 1px solid #cbd5e1; }
 
-    /* Map Layout Flex Wrapper */
-    .map-layout-wrapper { display: flex; gap: 15px; position: relative; }
-    .map-wrapper { position: relative; flex: 1; }
-    #map { height: 480px; width: 100%; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); }
+  /* small All / Parcels / Buildings box */
+  .seg { display: inline-flex; align-items: center; gap: 4px; background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; padding: 4px 6px; font-size: 12px; }
+  .seg button { padding: 7px 10px; background: #f1f5f9; color: #334155; font-weight: 600; display: inline-flex; align-items: center; gap: 5px; }
+  .seg button.on { background: #0f172a; color: #fff; }
+  .seg i { width: 10px; height: 10px; border-radius: 2px; display: inline-block; border: 1px solid #fff; }
 
-    .coord-banner {
-      position: absolute;
-      bottom: 10px;
-      right: 10px;
-      z-index: 1000;
-      background: rgba(15, 23, 42, 0.85);
-      color: #fff;
-      padding: 6px 12px;
-      font-size: 12px;
-      border-radius: 4px;
-      font-family: monospace;
-      pointer-events: none;
-      box-shadow: 0 2px 4px rgba(0,0,0,0.2);
-    }
-    
-    .table-container { overflow-x: auto; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); max-height: 400px; }
-    table { width: 100%; border-collapse: collapse; text-align: left; }
-    th, td { padding: 12px 15px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
-    th { background-color: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; letter-spacing: 0.5px; position: sticky; top: 0; z-index: 10; cursor: pointer; user-select: none; }
-    th:hover { background-color: #1e293b; }
-    tr:nth-child(even) { background-color: #f8fafc; }
-    tr:hover { background-color: #e2e8f0; cursor: pointer; }
-    
-    .status-badge { padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 12px; display: inline-block; }
-    .status-approved { background: #dcfce7; color: #166534; }
-    .status-pending { background: #fef9c3; color: #854d0e; }
-    .status-rejected { background: #fee2e2; color: #991b1b; }
+  .search-box { width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid #cbd5e1; border-radius: 6px; outline: none; background: #fff; }
+  #track-search-input { border-left: 4px solid #2563eb; }
+  .track-row { display: flex; gap: 8px; }
+  .track-row input { flex: 1; min-width: 0; }
+  .track-row button { padding: 0 16px; font-weight: bold; color: #fff; }
 
-    .btn-details { background: #0f172a; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 13px; }
-    .btn-details:hover { background: #334155; }
+  .data-status { display: none; padding: 8px 12px; border-radius: 6px; font-size: 13px; background: #eff6ff; color: #1e40af; }
+  .data-status.show { display: block; }
+  .data-status.ok { background: #f0fdf4; color: #166534; }
+  .data-status.error { background: #fef2f2; color: #991b1b; }
 
-    .modal { display: none; position: fixed; z-index: 2000; left: 0; top: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); justify-content: center; align-items: center; }
-    .modal-content { background: #fff; width: 92%; max-width: 850px; border-radius: 8px; padding: 25px; max-height: 88vh; overflow-y: auto; position: relative; box-shadow: 0 10px 25px rgba(0,0,0,0.2); }
-    .close-btn { position: absolute; right: 20px; top: 15px; font-size: 24px; cursor: pointer; font-weight: bold; color: #64748b; }
-    .close-btn:hover { color: #0f172a; }
-    
-    .details-item { background: #f8fafc; padding: 10px; border-radius: 6px; font-size: 14px; border: 1px solid #e2e8f0; }
-    .details-item span { display: block; font-size: 12px; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }
-    .details-section { grid-column: span 2; font-weight: bold; font-size: 16px; margin-top: 15px; border-bottom: 2px solid #0f172a; padding-bottom: 4px; color: #0f172a; }
-  </style>
+  .zone-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; background: #fff; padding: 10px 14px; border-radius: 6px; border: 1px solid #cbd5e1; font-size: 13px; }
+  #zone-info-display { font-family: monospace; color: #334155; }
+
+  .map-wrapper { position: relative; }
+  #map { height: 480px; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,.1); }
+  .coord-banner { position: absolute; bottom: 10px; right: 10px; z-index: 1000; background: rgba(15,23,42,.85); color: #fff; padding: 5px 10px; font: 11px monospace; border-radius: 4px; pointer-events: none; }
+
+  /* Tracking board (filled by app.js) */
+  .leaflet-routing-container { display: none !important; }
+  .me-dot { width: 18px; height: 18px; border-radius: 50%; background: #2563eb; border: 3px solid #fff; animation: pulse 1.8s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(37,99,235,.6); } 70%, 100% { box-shadow: 0 0 0 18px rgba(37,99,235,0); } }
+  .step-dot { width: 22px; height: 22px; border-radius: 50%; background: #f59e0b; border: 3px solid #fff; animation: pulse2 1.4s infinite; }
+  @keyframes pulse2 { 0% { box-shadow: 0 0 0 0 rgba(245,158,11,.7); } 70%, 100% { box-shadow: 0 0 0 16px rgba(245,158,11,0); } }
+  #nav-board { position: absolute; left: 50%; transform: translateX(-50%); bottom: 18px; z-index: 1000; width: min(94%, 440px); max-height: 55%; overflow-y: auto; background: #fff; border-radius: 16px; box-shadow: 0 6px 24px rgba(0,0,0,.35); padding: 12px 40px 12px 14px; font-size: 13px; display: none; }
+  #nav-board .place { font-size: 14px; font-weight: 700; color: #0f172a; }
+  #nav-board .big { font-size: 20px; font-weight: 700; color: #0f172a; margin-top: 8px; padding-top: 8px; border-top: 1px solid #e2e8f0; }
+  #nav-board .sub { color: #475569; margin-top: 3px; word-break: break-word; }
+  #nav-board summary { cursor: pointer; font-weight: 700; margin-top: 8px; color: #2563eb; }
+  #nav-board .st { display: flex; align-items: center; gap: 10px; padding: 8px 6px; border-bottom: 1px solid #f1f5f9; cursor: pointer; border-radius: 6px; }
+  #nav-board .st:hover, #nav-board .st.on { background: #eff6ff; }
+  #nav-board .st em { font-style: normal; font-weight: 700; font-size: 20px; width: 28px; text-align: center; flex: none; }
+  #nav-board .st span { flex: 1; }
+  #nav-board .st b { white-space: nowrap; color: #334155; }
+  .nav-x { position: absolute; top: 8px; right: 10px; background: #e2e8f0; border-radius: 50%; width: 24px; height: 24px; padding: 0; }
+  #nav-chip { position: absolute; top: 88px; left: 10px; z-index: 1000; display: none; flex-direction: column; gap: 6px; }
+  #nav-chip button { width: 34px; height: 34px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35); padding: 0; }
+
+  .table-container { overflow: auto; max-height: 400px; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,.1); }
+  table { width: 100%; border-collapse: collapse; text-align: left; }
+  th, td { padding: 11px 13px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
+  th { background: #0f172a; color: #fff; text-transform: uppercase; font-size: 12px; position: sticky; top: 0; z-index: 10; cursor: pointer; }
+  tr:nth-child(even) { background: #f8fafc; }
+  tbody tr:hover { background: #e2e8f0; cursor: pointer; }
+  .btn-details { background: #0f172a; color: #fff; padding: 6px 10px; font-size: 13px; }
+
+  .modal { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: 2000; background: rgba(0,0,0,.5); justify-content: center; align-items: center; }
+  .modal-content { background: #fff; width: 92%; max-width: 850px; border-radius: 8px; padding: 24px; max-height: 88vh; overflow-y: auto; position: relative; }
+  .close-btn { position: absolute; right: 18px; top: 10px; font-size: 26px; cursor: pointer; color: #64748b; }
+  .details-item { background: #f8fafc; padding: 10px; border-radius: 6px; font-size: 14px; border: 1px solid #e2e8f0; }
+  .details-item span { display: block; font-size: 12px; color: #64748b; margin-bottom: 3px; text-transform: uppercase; }
+  .details-section { grid-column: span 2; font-weight: bold; font-size: 16px; margin-top: 12px; border-bottom: 2px solid #0f172a; padding-bottom: 4px; }
+  #modal-body { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+
+  @media (max-width: 640px) {
+    .container { padding: 10px; }
+    #map { height: 62vh; }
+    #modal-body { grid-template-columns: 1fr; }
+    .details-section, .details-item[style*="span 2"] { grid-column: span 1 !important; }
+  }
+</style>
 </head>
 <body>
+<header><h1>MBANI WebGIS - Building Permit & Land Administration Dashboard</h1></header>
 
-  <header>
-    <h1>MBANI WebGIS - Building Permit & Land Administration Dashboard</h1>
-  </header>
-
-  <div class="container">
-    <!-- Mode Selection Toggle Buttons -->
-    <div class="mode-selector">
-      <button id="togglePermitBtn" class="mode-btn" style="background: #0f172a; color: white;">📋 Permit & Parcel Search</button>
-      <button id="toggleTrackerBtn" class="mode-btn" style="background: #e2e8f0; color: #333;">📍 GPS House Tracker</button>
-    </div>
-
-    <!-- Search Section 1: General Permit & Parcel Filter -->
-    <div id="permitSearchBox" class="search-section">
-      <input type="text" id="search-input" class="search-box" placeholder="🔍 General Filter: Search by Permit No, Applicant, Land Title..." />
-    </div>
-
-    <!-- Search Section 2: GPS Tracker & Distance Calculation (Hidden by default) -->
-    <div id="trackerSearchBox" class="search-section" style="display: none;">
-      <input type="text" id="track-search-input" class="search-box" placeholder="🎯 Map Tracker: Type Permit No or Name to calculate distance & draw line..." />
-    </div>
-
-     <!-- Urban Zoning Regulations Inspector Toolbar -->
-    <div class="zone-toolbar">
-      <label for="zone-select" style="font-weight: bold; font-size: 13px;">🏛️ Inspect Zoning Limits:</label>
-      <select id="zone-select" class="zone-select" onchange="displayZoneInfo(this.value)">
-        <option value="Yaoundé 1">Yaoundé 1</option>
-        <option value="Yaoundé 2">Yaoundé 2</option>
-        <option value="Yaoundé 3">Yaoundé 3</option>
-        <option value="Yaoundé 4">Yaoundé 4</option>
-        <option value="Yaoundé 5">Yaoundé 5</option>
-        <option value="Yaoundé 6">Yaoundé 6</option>
-        <option value="Yaoundé 7">Yaoundé 7</option>
-        <option value="Default" selected>Default Rules</option>
-      </select>
-      <div id="zone-info-display" class="zone-info-banner">
-        Max Height: <strong>12.0m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2.0</strong>
-      </div>
-    </div>
-
-    <!-- Map Layout Wrapper -->
-    <div class="map-layout-wrapper">
-      <div class="map-wrapper">
-        <div id="map"></div>
-        <div id="coord-display" class="coord-banner">UTM Zone 32N | Move cursor on map</div>
-      </div>
-    </div>
-
-    <div class="table-container">
-      <table>
-        <thead>
-          <tr>
-            <th onclick="sortTableBy('permit_number')">Permit No ↕</th>
-            <th onclick="sortTableBy('applicant_full_name')">Applicant ↕</th>
-            <th onclick="sortTableBy('applicant_email')">Email ↕</th>
-            <th onclick="sortTableBy('applicant_phone_number')">Phone ↕</th>
-            <th onclick="sortTableBy('parcel_arrondissement')">Arrondissement ↕</th>
-          
-            <th style="cursor: default;">Actions</th>
-          </tr>
-        </thead>
-        <tbody id="permit-table-body">
-          <tr><td colspan="7" style="text-align:center;">Loading building permit data from database...</td></tr>
-        </tbody>
-      </table>
+<div class="container">
+  <div class="bar">
+    <button id="togglePermitBtn" class="mode-btn" style="background:#0f172a;color:#fff">📋 Permit & Parcel Search</button>
+    <button id="toggleTrackerBtn" class="mode-btn" style="background:#e2e8f0;color:#333">📍 GPS House Tracker</button>
+    <button id="toggleAllGeomBtn" onclick="toggleAllPermitsOnMap()">🌐 Show All Parcels & Footprints</button>
+    <div class="seg" id="layer-mode" title="Choose what to display on the map">
+      <span>Show:</span>
+      <button data-mode="all" class="on">🌐 All</button>
+      <button data-mode="parcel"><i style="background:#00d2ff"></i>Parcels</button>
+      <button data-mode="building"><i style="background:#ffab00"></i>Buildings</button>
     </div>
   </div>
 
-  <div id="detail-modal" class="modal">
-    <div class="modal-content">
-      <span class="close-btn" onclick="closeModal()">&times;</span>
-      <h2 id="modal-title" style="margin-bottom:15px; color:#0f172a;">Building Permit & Spatial Details</h2>
-      <div id="modal-body" style="display:grid; grid-template-columns: 1fr 1fr; gap:12px;"></div>
+  <div id="data-status" class="data-status"></div>
+
+  <div id="permitSearchBox">
+    <input id="search-input" class="search-box" placeholder="🔍 General Filter: Permit No, Applicant, Land Title...">
+  </div>
+  <div id="trackerSearchBox" style="display:none">
+    <div class="track-row">
+      <input id="track-search-input" class="search-box" type="search" enterkeyhint="go" autocomplete="off" placeholder="🎯 Permit No, name or land title, then tap Track">
+      <button id="track-go-btn" style="background:#2563eb">▶ Track</button>
+      <button id="track-stop-btn" style="background:#dc2626;display:none">⏹ Stop</button>
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <!-- Leaflet Routing Machine JS -->
-  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
-  
-  <script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
-  <script src="app.js"></script>
+  <div class="zone-toolbar">
+    <label for="zone-select"><b>🏛️ Inspect Zoning Limits:</b></label>
+    <select id="zone-select" onchange="displayZoneInfo(this.value)">
+      <option>Yaoundé 1</option><option>Yaoundé 2</option><option>Yaoundé 3</option><option>Yaoundé 4</option>
+      <option>Yaoundé 5</option><option>Yaoundé 6</option><option>Yaoundé 7</option><option value="Default" selected>Default Rules</option>
+    </select>
+    <div id="zone-info-display">Max Height: <strong>12m</strong> | Max Floors: <strong>4</strong> | Max CES: <strong>60%</strong> | Max COS: <strong>2</strong></div>
+  </div>
+
+  <div class="map-wrapper">
+    <div id="map"></div>
+    <div id="coord-display" class="coord-banner">UTM Zone 32N (EPSG:32632) | Move cursor or tap on map</div>
+    <div id="nav-chip"><button id="chip-show" title="Show / hide tracking board">🧭</button><button id="chip-stop" title="Stop tracking">⏹</button></div>
+    <div id="nav-board">
+      <button class="nav-x" title="Hide">✕</button>
+      <div id="nb-loc"></div><div id="nb-sum"></div>
+      <details id="nb-dir"><summary>Directions</summary><div id="nb-steps"></div></details>
+    </div>
+  </div>
+
+  <div class="table-container">
+    <table>
+      <thead><tr>
+        <th onclick="sortTableBy('permit_number')">Permit No ↕</th>
+        <th onclick="sortTableBy('applicant_full_name')">Applicant ↕</th>
+        <th onclick="sortTableBy('applicant_email')">Email ↕</th>
+        <th onclick="sortTableBy('applicant_phone')">Phone ↕</th>
+        <th onclick="sortTableBy('parcel_arrondissement')">Arrondissement ↕</th>
+        <th onclick="sortTableBy('building_use')">Building Use ↕</th>
+        <th style="cursor:default">Actions</th>
+      </tr></thead>
+      <tbody id="permit-table-body"><tr><td colspan="7" style="text-align:center">Loading…</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="detail-modal" class="modal">
+  <div class="modal-content">
+    <span class="close-btn" onclick="closeModal()">&times;</span>
+    <h2 id="modal-title" style="margin-bottom:12px;color:#0f172a"></h2>
+    <div id="modal-body"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://unpkg.com/leaflet-routing-machine@3.2.12/dist/leaflet-routing-machine.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.9.0/proj4.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
