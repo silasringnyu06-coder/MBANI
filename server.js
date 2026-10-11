@@ -13,64 +13,105 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Cleaned SQL Query (Using lowercase column names)
+// Updated SQL Query matching the exact latest schema & column modifications
 const getBuildingPermitQuery = () => `
-  SELECT 
-      p_applicant.person_id AS applicant_id,
-      p_applicant.full_name AS applicant_full_name,
-      p_applicant.nui AS applicant_nui,
-      p_applicant.phone AS applicant_phone,
-      p_applicant.email AS applicant_email,
-      p_applicant.address AS applicant_address,
-      p_applicant.sex AS applicant_sex,
-      
-      pa.parcel_id,
-      pa.plot_no,
-      pa.arrondissement AS parcel_arrondissement,
-      pa.quarter AS parcel_quarter,
-      pa.area_sq_m AS parcel_area_sq_m,
-      pa.cadastral_area,
-      ST_AsGeoJSON(ST_Transform(pa.geom, 4326))::json AS parcel_geom,
-      pa.calculated_area AS parcel_calculated_area,
-      
-      p_owner.person_id AS owner_id,
-      p_owner.full_name AS owner_full_name,
-      p_owner.nui AS owner_nui,                  
-      p_owner.phone AS owner_phone,
-      p_owner.email AS owner_email,
-      p_owner.address AS owner_address,
-      p_owner.sex AS owner_sex,
+  SELECT
+      -- 1. PERSONNE : DEMANDEUR
+      p_app.personne_id AS demandeur_id,
+      p_app.nom_complet AS demandeur_nom,
+      p_app.nui AS demandeur_nui,
+      p_app.telephone AS demandeur_telephone,
+      p_app.email AS demandeur_email,
+      p_app.adresse AS demandeur_adresse,
+      p_app.sexe AS demandeur_sexe,
+      p_app.cni AS demandeur_cni,
+      p_app.nationalite AS demandeur_nationalite,
 
-      bp.permit_id,
-      bp.permit_number,
-      bp.floors_above_ground,
-      bp.floors_underground,
-      bp.building_use,
-      bp.parking_place,
-      bp.height_m,
-      bp.area_sq_m AS building_area_sq_m,
+      -- 2. PARCELLE
+      pa.parcelle_id,
+    pa.plot_no,
+    pa.arrondissement,
+    pa.quartier,
+    pa.lieu_dit,
+    pa.cadastral_area,
+    pa.titre_foncier,
+    pa.lotissement,
+    pa.servitudes,
+    pa.num_tit_foncier_mère AS num_tit_foncier_mere,
+    pa.num_lot,
+    pa.co_owners,
+    pa.prop_cert_no,
+    pa.prop_cert_date,
+      ST_AsGeoJSON(ST_Transform(pa.geom, 4326))::json AS parcel_geom,
+      pa.superficie_calculee AS parcel_calculated_area,
+
+      -- 3. CERTIFICAT D'URBANISME
+      cu.cu_id,
+      cu.cu_number,
+      cu.num_dossier AS cu_num_dossier,
+      cu.date_demande,
+      cu.qualite_demandeur,
+      cu.operation_demandee,
+      cu.usage_du_bati AS cu_usage_bati,
+      cu.code_zone,
+      cu.nom_zone,
+      cu.largeur_voie_minimale_m,
+      cu.retrait_minimal_m,
+      cu.facade_minimale_m,
+      cu.superficie_parcelle_minimale_m2,
+      cu.activites_interdites,
+      cu.date_delivrance,
+      cu.date_expiration,
+      cu.statut AS statut_cu,
+
+      -- 4. PERMIS DE CONSTRUIRE
+      bp.permis_id,
+      bp.numero_permis,
+      bp.arrete_number,
+      bp.technical_file_no,
+      bp.commission_date,
+      bp.nature_travaux,
+      bp.nombre_planchers,
+      bp.etages_hors_sol,
+      bp.etages_sous_sol,
+      bp.usage_bati,
+      bp.nombre_places_parkings,
+      bp.hauteur_construction,
+      bp.superficie_terrain,
       bp.building_cost,
-      bp.issue_date,
-      bp.expiry_date,
+      bp.cout_total_projet,
       bp.cos,
       bp.ces,
-      bp.setback_front,
-      bp.setback_boundary,
-      bp.estimated_cost,
+      bp.recul_voies_publiques,
+      bp.recul_limites_separatives,
       bp.title_rec_no,
-      bp.status AS permit_status,
+      bp.architecte_responsable,
+      bp.architect_onac_no,
+      bp.status AS statut_permis,
       bp.input_database_date,
+      bp.issue_date,
+      bp.expiry_date,
       ST_AsGeoJSON(ST_Transform(bp.geom, 4326))::json AS building_geom,
-      bp.calculated_area AS building_calculated_area,
-      
-      ST_AsGeoJSON(ST_Transform(ST_Collect(pa.geom, bp.geom), 4326))::json AS parcel_and_building_geom,
-      ST_Intersects(bp.geom, pa.geom) AS building_intersects_parcel,
-      ST_Contains(pa.geom, bp.geom) AS building_fully_contained_in_parcel
+      bp.superficie_calculee AS building_calculated_area,
 
-  FROM building_permit bp
-  LEFT JOIN person p_applicant ON bp.applicant_id = p_applicant.person_id
-  LEFT JOIN parcel pa ON bp.parcel_id = pa.parcel_id
-  LEFT JOIN person p_owner ON pa.owned_by = p_owner.person_id;
+      -- 5. GEOMETRIE COMBINEE (parcelle + batiment)
+      ST_AsGeoJSON(ST_Transform(ST_Collect(pa.geom, bp.geom), 4326))::json AS parcel_and_building_geom,
+
+      -- 6. VERIFICATIONS SPATIALES
+      ST_Intersects(bp.geom, pa.geom) AS building_intersects_parcel,
+      ST_Contains(pa.geom, bp.geom) AS building_fully_contained_in_parcel,
+
+      CASE
+          WHEN cu.retrait_minimal_m IS NOT NULL
+              THEN bp.recul_voies_publiques >= cu.retrait_minimal_m
+          ELSE TRUE
+      END AS setback_ok
+
+  FROM permis_construire bp
+  LEFT JOIN personne p_app ON bp.demandeur_id = p_app.personne_id
+  LEFT JOIN parcelle pa ON bp.parcelle_id = pa.parcelle_id
+  LEFT JOIN personne p_own ON pa.proprietaire_id = p_own.personne_id
+  LEFT JOIN certificat_urbanisme cu ON bp.cu_id = cu.cu_id;
 `;
 
 // Fetch endpoints
@@ -97,57 +138,103 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
   try {
     await db.cloudQuery(`CREATE EXTENSION IF NOT EXISTS postgis;`);
 
+    // TABLE: PERSONNE
     await db.cloudQuery(`
-      CREATE TABLE IF NOT EXISTS person (
-        person_id SERIAL PRIMARY KEY,
-        full_name VARCHAR(50),
-        nui VARCHAR(80),
-        phone INTEGER,
+      CREATE TABLE IF NOT EXISTS personne (
+        personne_id SERIAL PRIMARY KEY,
+        nom_complet VARCHAR(150) NOT NULL,
+        nui VARCHAR(80) UNIQUE,
+        telephone VARCHAR(20),
         email VARCHAR(50),
-        address VARCHAR(255),
-        sex VARCHAR(10)
+        adresse VARCHAR(150),
+        sexe CHAR(1),
+        cni VARCHAR(50),
+        nationalite VARCHAR(50)
       );
     `);
 
+    // TABLE: PARCELLE
     await db.cloudQuery(`
-      CREATE TABLE IF NOT EXISTS parcel (
-        parcel_id SERIAL PRIMARY KEY,
-        plot_no VARCHAR(50),
-        arrondissement VARCHAR(50),
-        quarter VARCHAR(50),
-        area_sq_m NUMERIC,
-        cadastral_area NUMERIC,
-        geom GEOMETRY(Polygon, 32632),
-        calculated_area NUMERIC,
-        owned_by INTEGER REFERENCES person(person_id)
+      CREATE TABLE IF NOT EXISTS parcelle (
+        parcelle_id SERIAL PRIMARY KEY,
+        geom GEOMETRY(Polygon, 32632) NOT NULL,
+        superficie_calculee NUMERIC GENERATED ALWAYS AS (ST_Area(geom)) STORED,
+        proprietaire_id INTEGER REFERENCES personne(personne_id) ON DELETE SET NULL,
+        plot_no VARCHAR(50) UNIQUE NOT NULL,
+        arrondissement VARCHAR(30),
+        quartier VARCHAR(50),
+        lieu_dit VARCHAR(80),
+        cadastral_area VARCHAR(50),
+        titre_foncier VARCHAR(30) UNIQUE,
+        lotissement VARCHAR(10),
+        servitudes VARCHAR(10),
+        num_tit_foncier_mere VARCHAR(30),
+        num_lot VARCHAR(255),
+        co_owners VARCHAR(255),
+        prop_cert_no VARCHAR(50),
+        prop_cert_date DATE
       );
     `);
 
+    // TABLE: CERTIFICAT D'URBANISME
     await db.cloudQuery(`
-      CREATE TABLE IF NOT EXISTS building_permit (
-        permit_id SERIAL PRIMARY KEY,
-        permit_number VARCHAR(20),
-        applicant_id INTEGER REFERENCES person(person_id),
-        parcel_id INTEGER REFERENCES parcel(parcel_id),
-        floors_above_ground VARCHAR(50),
-        floors_underground VARCHAR(50),
-        building_use VARCHAR(100),
-        parking_place VARCHAR(50),
-        height_m NUMERIC,
-        area_sq_m NUMERIC,
-        building_cost NUMERIC,
-        issue_date DATE,
-        expiry_date DATE,
-        cos NUMERIC,
-        ces NUMERIC,
-        setback_front NUMERIC,
-        setback_boundary NUMERIC,
-        estimated_cost NUMERIC,
+      CREATE TABLE IF NOT EXISTS certificat_urbanisme (
+        cu_id SERIAL PRIMARY KEY,
+        demandeur_id INTEGER REFERENCES personne(personne_id) ON DELETE CASCADE,
+        parcelle_id INTEGER REFERENCES parcelle(parcelle_id) ON DELETE CASCADE,
+        cu_number VARCHAR(60) UNIQUE NOT NULL,
+        num_dossier VARCHAR(30),
+        date_demande DATE,
+        qualite_demandeur VARCHAR(20),
+        operation_demandee VARCHAR(40),
+        usage_du_bati VARCHAR(30),
+        code_zone VARCHAR(10) NOT NULL,
+        nom_zone VARCHAR(150) NOT NULL,
+        largeur_voie_minimale_m NUMERIC(5,2),
+        retrait_minimal_m NUMERIC(5,2),
+        facade_minimale_m NUMERIC(5,2),
+        superficie_parcelle_minimale_m2 NUMERIC(8,2),
+        activites_interdites TEXT,
+        date_delivrance DATE,
+        date_expiration DATE,
+        statut VARCHAR(20)
+      );
+    `);
+
+    // TABLE: PERMIS DE CONSTRUIRE
+    await db.cloudQuery(`
+      CREATE TABLE IF NOT EXISTS permis_construire (
+        permis_id SERIAL PRIMARY KEY,
+        geom GEOMETRY(Polygon, 32632) NOT NULL,
+        superficie_calculee NUMERIC GENERATED ALWAYS AS (ST_Area(geom)) STORED,
+        demandeur_id INTEGER REFERENCES personne(personne_id) ON DELETE CASCADE,
+        parcelle_id INTEGER REFERENCES parcelle(parcelle_id) ON DELETE CASCADE,
+        cu_id INTEGER REFERENCES certificat_urbanisme(cu_id) ON DELETE SET NULL,
+        numero_permis VARCHAR(60) UNIQUE,
+        arrete_number VARCHAR(60),
+        technical_file_no VARCHAR(30),
+        commission_date DATE,
+        nature_travaux VARCHAR(40),
+        nombre_planchers VARCHAR(30),
+        etages_hors_sol VARCHAR(30),
+        etages_sous_sol VARCHAR(30),
+        usage_bati VARCHAR(30),
+        nombre_places_parkings VARCHAR(20),
+        hauteur_construction NUMERIC(5,2),
+        superficie_terrain NUMERIC(12,2),
+        building_cost VARCHAR(30),
+        cout_total_projet NUMERIC(12,2),
+        cos NUMERIC(4,2),
+        ces NUMERIC(4,2),
+        recul_voies_publiques NUMERIC(5,2),
+        recul_limites_separatives NUMERIC(5,2),
         title_rec_no VARCHAR(50),
-        status VARCHAR(50),
-        input_database_date TIMESTAMP,
-        geom GEOMETRY(Polygon, 32632),
-        calculated_area NUMERIC
+        architecte_responsable VARCHAR(150),
+        architect_onac_no VARCHAR(20),
+        status VARCHAR(20),
+        input_database_date DATE DEFAULT CURRENT_DATE,
+        issue_date DATE,
+        expiry_date DATE
       );
     `);
 
@@ -157,63 +244,73 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
   }
 });
 
-// Sync handler function
+// Sync handler function updated to new tables & columns
 const pushLocalDataHandler = async (req, res) => {
   try {
-    const localPersons = await db.localQuery('SELECT * FROM person;');
+    const localPersons = await db.localQuery('SELECT * FROM personne;');
     for (let row of localPersons.rows) {
       await db.cloudQuery(
-        `INSERT INTO person (person_id, full_name, nui, phone, email, address, sex) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7) 
-         ON CONFLICT (person_id) DO UPDATE SET
-           full_name = EXCLUDED.full_name, nui = EXCLUDED.nui, phone = EXCLUDED.phone, email = EXCLUDED.email, address = EXCLUDED.address, sex = EXCLUDED.sex;`,
-        [row.person_id, row.full_name, row.nui || row.NUI, row.phone, row.email, row.address, row.sex]
+        `INSERT INTO personne (personne_id, nom_complet, nui, telephone, email, adresse, sexe, cni, nationalite) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+         ON CONFLICT (personne_id) DO UPDATE SET
+           nom_complet = EXCLUDED.nom_complet, nui = EXCLUDED.nui, telephone = EXCLUDED.telephone, 
+           email = EXCLUDED.email, adresse = EXCLUDED.adresse, sexe = EXCLUDED.sexe, 
+           cni = EXCLUDED.cni, nationalite = EXCLUDED.nationalite;`,
+        [row.personne_id, row.nom_complet, row.nui, row.telephone, row.email, row.adresse, row.sexe, row.cni, row.nationalite]
       );
     }
 
-    const localParcels = await db.localQuery('SELECT * FROM parcel;');
+    const localParcels = await db.localQuery('SELECT * FROM parcelle;');
     for (let row of localParcels.rows) {
       await db.cloudQuery(
-        `INSERT INTO parcel (parcel_id, plot_no, arrondissement, quarter, area_sq_m, cadastral_area, geom, calculated_area, owned_by) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-         ON CONFLICT (parcel_id) DO UPDATE SET
-           plot_no = EXCLUDED.plot_no, arrondissement = EXCLUDED.arrondissement, quarter = EXCLUDED.quarter, area_sq_m = EXCLUDED.area_sq_m, cadastral_area = EXCLUDED.cadastral_area, geom = EXCLUDED.geom, calculated_area = EXCLUDED.calculated_area, owned_by = EXCLUDED.owned_by;`,
-        [row.parcel_id, row.plot_no, row.arrondissement, row.quarter, row.area_sq_m, row.cadastral_area, row.geom, row.calculated_area, row.owned_by]
+        `INSERT INTO parcelle (parcelle_id, geom, proprietaire_id, plot_no, arrondissement, quartier, lieu_dit, cadastral_area, titre_foncier, lotissement, servitudes, num_tit_foncier_mere, num_lot, co_owners, prop_cert_no, prop_cert_date) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) 
+         ON CONFLICT (parcelle_id) DO UPDATE SET
+           geom = EXCLUDED.geom, proprietaire_id = EXCLUDED.proprietaire_id, plot_no = EXCLUDED.plot_no, 
+           arrondissement = EXCLUDED.arrondissement, quartier = EXCLUDED.quartier, lieu_dit = EXCLUDED.lieu_dit, 
+           cadastral_area = EXCLUDED.cadastral_area, titre_foncier = EXCLUDED.titre_foncier, 
+           lotissement = EXCLUDED.lotissement, servitudes = EXCLUDED.servitudes, 
+           num_tit_foncier_mere = EXCLUDED.num_tit_foncier_mere, num_lot = EXCLUDED.num_lot, 
+           co_owners = EXCLUDED.co_owners, prop_cert_no = EXCLUDED.prop_cert_no, prop_cert_date = EXCLUDED.prop_cert_date;`,
+        [row.parcelle_id, row.geom, row.proprietaire_id, row.plot_no, row.arrondissement, row.quartier, row.lieu_dit, row.cadastral_area, row.titre_foncier, row.lotissement, row.servitudes, row.num_tit_foncier_mere || row.num_Tit_Foncier_Mère, row.num_lot, row.co_owners, row.prop_cert_no, row.prop_cert_date]
       );
     }
 
-    const localPermits = await db.localQuery('SELECT * FROM building_permit;');
+    const localCU = await db.localQuery('SELECT * FROM certificat_urbanisme;');
+    for (let row of localCU.rows) {
+      await db.cloudQuery(
+        `INSERT INTO certificat_urbanisme (cu_id, demandeur_id, parcelle_id, cu_number, num_dossier, date_demande, qualite_demandeur, operation_demandee, usage_du_bati, code_zone, nom_zone, largeur_voie_minimale_m, retrait_minimal_m, facade_minimale_m, superficie_parcelle_minimale_m2, activites_interdites, date_delivrance, date_expiration, statut)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+         ON CONFLICT (cu_id) DO UPDATE SET
+           demandeur_id = EXCLUDED.demandeur_id, parcelle_id = EXCLUDED.parcelle_id, cu_number = EXCLUDED.cu_number, 
+           num_dossier = EXCLUDED.num_dossier, date_demande = EXCLUDED.date_demande, qualite_demandeur = EXCLUDED.qualite_demandeur, 
+           operation_demandee = EXCLUDED.operation_demandee, usage_du_bati = EXCLUDED.usage_du_bati, 
+           code_zone = EXCLUDED.code_zone, nom_zone = EXCLUDED.nom_zone, largeur_voie_minimale_m = EXCLUDED.largeur_voie_minimale_m, 
+           retrait_minimal_m = EXCLUDED.retrait_minimal_m, facade_minimale_m = EXCLUDED.facade_minimale_m, 
+           superficie_parcelle_minimale_m2 = EXCLUDED.superficie_parcelle_minimale_m2, activites_interdites = EXCLUDED.activites_interdites, 
+           date_delivrance = EXCLUDED.date_delivrance, date_expiration = EXCLUDED.date_expiration, statut = EXCLUDED.statut;`,
+        [row.cu_id, row.demandeur_id, row.parcelle_id, row.cu_number, row.num_dossier || row.num_Dossier, row.date_demande, row.qualite_demandeur, row.operation_demandee, row.usage_du_bati || row.usage_du_Bati, row.code_zone, row.nom_zone, row.largeur_voie_minimale_m, row.retrait_minimal_m, row.facade_minimale_m, row.superficie_parcelle_minimale_m2, row.activites_interdites, row.date_delivrance, row.date_expiration, row.statut]
+      );
+    }
+
+    const localPermits = await db.localQuery('SELECT * FROM permis_construire;');
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO building_permit (permit_id, permit_number, applicant_id, parcel_id, floors_above_ground, floors_underground, building_use, parking_place, height_m, area_sq_m, building_cost, issue_date, expiry_date, cos, ces, setback_front, setback_boundary, estimated_cost, title_rec_no, status, input_database_date, geom, calculated_area) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23) 
-         ON CONFLICT (permit_id) DO UPDATE SET
-           permit_number = EXCLUDED.permit_number, applicant_id = EXCLUDED.applicant_id, parcel_id = EXCLUDED.parcel_id, floors_above_ground = EXCLUDED.floors_above_ground, floors_underground = EXCLUDED.floors_underground, building_use = EXCLUDED.building_use, parking_place = EXCLUDED.parking_place, height_m = EXCLUDED.height_m, area_sq_m = EXCLUDED.area_sq_m, building_cost = EXCLUDED.building_cost, issue_date = EXCLUDED.issue_date, expiry_date = EXCLUDED.expiry_date, cos = EXCLUDED.cos, ces = EXCLUDED.ces, setback_front = EXCLUDED.setback_front, setback_boundary = EXCLUDED.setback_boundary, estimated_cost = EXCLUDED.estimated_cost, title_rec_no = EXCLUDED.title_rec_no, status = EXCLUDED.status, input_database_date = EXCLUDED.input_database_date, geom = EXCLUDED.geom, calculated_area = EXCLUDED.calculated_area;`,
-        [
-          row.permit_id, 
-          row.permit_number, 
-          row.applicant_id, 
-          row.parcel_id, 
-          row.floors_above_ground, 
-          row.floors_underground, 
-          row.building_use, 
-          row.parking_place, 
-          row.height_m, 
-          row.area_sq_m, 
-          row.building_cost, 
-          row.issue_date, 
-          row.expiry_date, 
-          row.cos, 
-          row.ces, 
-          row.setback_front, 
-          row.setback_boundary, 
-          row.estimated_cost, 
-          row.title_rec_no, 
-          row.status, 
-          row.input_database_date, 
-          row.geom, 
-          row.calculated_area
-        ]
+        `INSERT INTO permis_construire (permis_id, geom, demandeur_id, parcelle_id, cu_id, numero_permis, arrete_number, technical_file_no, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_bati, nombre_places_parkings, hauteur_construction, superficie_terrain, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30) 
+         ON CONFLICT (permis_id) DO UPDATE SET
+           geom = EXCLUDED.geom, demandeur_id = EXCLUDED.demandeur_id, parcelle_id = EXCLUDED.parcelle_id, cu_id = EXCLUDED.cu_id, 
+           numero_permis = EXCLUDED.numero_permis, arrete_number = EXCLUDED.arrete_number, technical_file_no = EXCLUDED.technical_file_no, 
+           commission_date = EXCLUDED.commission_date, nature_travaux = EXCLUDED.nature_travaux, nombre_planchers = EXCLUDED.nombre_planchers, 
+           etages_hors_sol = EXCLUDED.etages_hors_sol, etages_sous_sol = EXCLUDED.etages_sous_sol, usage_bati = EXCLUDED.usage_bati, 
+           nombre_places_parkings = EXCLUDED.nombre_places_parkings, hauteur_construction = EXCLUDED.hauteur_construction, 
+           superficie_terrain = EXCLUDED.superficie_terrain, building_cost = EXCLUDED.building_cost, cout_total_projet = EXCLUDED.cout_total_projet, 
+           cos = EXCLUDED.cos, ces = EXCLUDED.ces, recul_voies_publiques = EXCLUDED.recul_voies_publiques, 
+           recul_limites_separatives = EXCLUDED.recul_limites_separatives, title_rec_no = EXCLUDED.title_rec_no, 
+           architecte_responsable = EXCLUDED.architecte_responsable, architect_onac_no = EXCLUDED.architect_onac_no, 
+           status = EXCLUDED.status, input_database_date = EXCLUDED.input_database_date, issue_date = EXCLUDED.issue_date, 
+           expiry_date = EXCLUDED.expiry_date;`,
+        [row.permis_id, row.geom, row.demandeur_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.technical_file_no, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_bati, row.nombre_places_parkings, row.hauteur_construction, row.superficie_terrain, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date]
       );
     }
 
