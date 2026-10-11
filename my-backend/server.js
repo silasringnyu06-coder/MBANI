@@ -127,19 +127,26 @@ const getBuildingPermitQuery = () => `
 // Fetch endpoints
 app.get('/api/building-permit', async (req, res) => {
   try {
-    const result = await db.localQuery(getBuildingPermitQuery());
-    res.status(200).json(result.rows);
-  } catch (localErr) {
-    try {
-      const cloudResult = await db.cloudQuery(getBuildingPermitQuery());
-      res.status(200).json(cloudResult.rows);
-    } catch (cloudErr) {
-      res.status(500).json({ 
-        error: 'Server error fetching building permit from both databases',
-        localError: localErr.message,
-        cloudError: cloudErr.message
-      });
+    let result;
+    
+    // If running live on Render cloud, query Supabase cloud directly
+    if (process.env.RENDER || process.env.NODE_ENV === 'production') {
+      result = await db.cloudQuery(getBuildingPermitQuery());
+    } else {
+      // If running locally on your computer, try local DB first, fallback to cloud if local fails
+      try {
+        result = await db.localQuery(getBuildingPermitQuery());
+      } catch (localErr) {
+        result = await db.cloudQuery(getBuildingPermitQuery());
+      }
     }
+
+    res.status(200).json(result.rows);
+  } catch (err) {
+    res.status(500).json({ 
+      error: 'Server error fetching building permit',
+      details: err.message
+    });
   }
 });
 
@@ -325,9 +332,8 @@ const pushLocalDataHandler = async (req, res) => {
            retrait_minimal_m = EXCLUDED.retrait_minimal_m, facade_minimale_m = EXCLUDED.facade_minimale_m, 
            superficie_parcelle_minimale_m2 = EXCLUDED.superficie_parcelle_minimale_m2, activites_interdites = EXCLUDED.activites_interdites, 
            date_delivrance = EXCLUDED.date_delivrance, date_expiration = EXCLUDED.date_expiration, statut = EXCLUDED.statut;`,
-        [ row.cu_id, row.personne_id, row.parcelle_id,  row.cu_number,  row.num_dossier,  row.date_demande,  row.qualite_demandeur,  row.operation_demandee,  row["usage_du_Bati"] || row.usage_du_bati,  row.code_zone, row.nom_zone, row.largeur_voie_minimale_m, row.retrait_minimal_m,  row.facade_minimale_m, row.superficie_parcelle_minimale_m2, row.activites_interdites, row.date_delivrance,  row.date_expiration,  row.statut
-]
-);
+        [row.cu_id, row.personne_id, row.parcelle_id, row.cu_number, row.num_dossier, row.date_demande, row.qualite_demandeur, row.operation_demandee, row["usage_du_Bati"] || row.usage_du_bati, row.code_zone, row.nom_zone, row.largeur_voie_minimale_m, row.retrait_minimal_m, row.facade_minimale_m, row.superficie_parcelle_minimale_m2, row.activites_interdites, row.date_delivrance, row.date_expiration, row.statut]
+      );
     }
 
     const localPermits = await db.localQuery('SELECT * FROM permis_construire;');
