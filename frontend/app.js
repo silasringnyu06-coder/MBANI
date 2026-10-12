@@ -460,35 +460,43 @@ on('search-input', 'input', (e) => {
   if (q && filtered.length === 1) focusOnPermit(filtered[0].__key);
 });
 
-// ---------- 9. Live GPS Tracker & Road Routing ----------
-const navBoard = $('nav-board'), navChip =$('nav-chip'), nbq = (s) => navBoard.querySelector(s);
+// ========== 9. LIVE GPS TRACKER — follow your position, road route, tracking board with directions ==========
+// ▸ Tracker state — the tracking board elements and the variables for live GPS, route and markers.
+const navBoard = $('nav-board'), navChip = $('nav-chip'), nbq = (s) => navBoard.querySelector(s);
 let routing = null, watchId = null, me = null, halo = null, stepMarker = null, route = null, routeCoords = null;
 let following = true, offTrack = false, boardHidden = false, lastRouted = null, lastGeo = null, nav = {};
 [navBoard, navChip].forEach(el => { L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); });
 if (innerWidth > 640) nbq('#nb-dir').open = true;
-
+ 
+// ▸ setBoard — shows or hides the tracking board (the ✕ and 🧭 buttons use it).
 function setBoard(visible) { boardHidden = !visible; navBoard.style.display = visible && nav.title ? 'block' : 'none'; }
 nbq('.nav-x').onclick = () => setBoard(false);
-$('chip-show').onclick = () => setBoard(boardHidden);$('chip-stop').onclick = () => stopTracking();
+$('chip-show').onclick = () => setBoard(boardHidden);
+$('chip-stop').onclick = () => stopTracking();
+// ▸ Stop following — when you drag the map, it no longer re-centres on your position.
 map.on('dragstart', () => { following = false; renderLoc(); });
-
+ 
+// ▸ renderLoc — top of the board: your address, coordinates (lng/lat and UTM) and GPS accuracy.
 function renderLoc() {
   nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating you…')}</div>
-    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} \vert{} UTM${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
+    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} | UTM ${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
   const rc = nbq('#recenter');
   if (rc) rc.onclick = (e) => { e.preventDefault(); following = true; me && map.panTo(me.getLatLng()); renderLoc(); };
 }
-
+ 
+// ▸ renderSum — distance, time and destination, plus a warning when you leave the route.
 function renderSum() {
   const km = nav.dist >= 1000 ? (nav.dist / 1000).toFixed(1) + ' km' : Math.round(nav.dist || 0) + ' m';
-  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route…'}</div>
+  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} · ${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route…'}</div>
     <div class="sub">🎯 ${nav.title || ''}</div>
     ${nav.off ? '<div class="sub" style="color:#dc2626;font-weight:700">⚠️ Off route — recalculating…</div>' : ''}`;
 }
-
-const ICONS = { depart: 'A', arrive: '🎯', continue: '↑', 'bear-right': '↗️', 'turn-right': '↱', 'sharp-right': '↘️',
-  'u-turn': '↩️', 'sharp-left': '↙️', 'turn-left': '↰', 'bear-left': '↖️', 'enter-roundabout': '⟳' };
-
+ 
+// ▸ ICONS — arrow symbols for each kind of turn.
+const ICONS = { depart: 'A', arrive: '🎯', continue: '↑', 'bear-right': '↗', 'turn-right': '↱', 'sharp-right': '↘',
+  'u-turn': '↩', 'sharp-left': '↙', 'turn-left': '↰', 'bear-left': '↖', 'enter-roundabout': '⟳' };
+ 
+// ▸ renderSteps — fills the Directions list with the turn-by-turn instructions.
 function renderSteps(rt) {
   route = rt;
   try {
@@ -500,7 +508,8 @@ function renderSteps(rt) {
     }).join('');
   } catch (e) { nbq('#nb-steps').innerHTML = ''; }
 }
-
+ 
+// ▸ Direction tap — tapping a turn puts an orange marker on the route at that point (tap again to remove it).
 nbq('#nb-steps').addEventListener('click', (e) => {
   const row = e.target.closest('.st');
   if (!row || !route) return;
@@ -518,7 +527,8 @@ nbq('#nb-steps').addEventListener('click', (e) => {
   map.panBy([0, navBoard.offsetHeight / 2]);
   stepMarker.openPopup();
 });
-
+ 
+// ▸ reverseGeocode — turns your GPS point into a street / area name (OpenStreetMap).
 async function reverseGeocode(lat, lng) {
   if (lastGeo && L.latLng(lastGeo).distanceTo([lat, lng]) < 100) return;
   lastGeo = [lat, lng];
@@ -528,8 +538,9 @@ async function reverseGeocode(lat, lng) {
     renderLoc();
   } catch (e) {}
 }
-
-function distToRoute(p, coords) {
+ 
+// ▸ distToRoute — how far (in metres) you are from the route line; used to detect going off route.
+function distToRoute(p, coords) {         // metres from a point to the route line
   const k = Math.cos(p.lat * Math.PI / 180), M = 111320, xy = (c) => [(c.lng - p.lng) * k * M, (c.lat - p.lat) * M];
   let best = Infinity;
   for (let i = 1; i < coords.length; i++) {
@@ -539,7 +550,8 @@ function distToRoute(p, coords) {
   }
   return best;
 }
-
+ 
+// ▸ stopTracking — stops GPS watching, clears the route and markers, hides the board.
 function stopTracking() {
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = me = halo = lastRouted = lastGeo = stepMarker = route = routeCoords = null;
@@ -549,35 +561,37 @@ function stopTracking() {
   navBoard.style.display = navChip.style.display = 'none';
   $('track-stop-btn').style.display = 'none';
 }
-
+ 
+// ▸ runTracker — finds the typed permit, checks HTTPS / GPS support, follows your live position and draws the road route to it.
 function runTracker() {
   const query = $('track-search-input').value.trim().toLowerCase();
   if (!query) return;
   stopTracking();
   following = true;
-
+ 
   const record = globalPermitData.find(r => matches(r, query));
   if (!record) return alert("No matching permit or house found!");
   if (!navigator.geolocation) return alert("Geolocation is not supported by your browser");
   if (!window.isSecureContext) return alert("Live GPS only works on an HTTPS page. Open the https:// link of this site on your phone.");
-
+ 
   const key = record.__key || (record.permis_id || record.numero_permis).toString(), g = layersMap[key];
   if (!g) return alert("This record has no geometry to navigate to.");
   if (!geojsonGroup.hasLayer(g)) { geojsonGroup.addLayer(g); applyMode(); }
   const target = g.bnds.getCenter();
-
+ 
   nav = { title: `${record.numero_permis || ''} ${record.name ? '— ' + record.name : ''}`.trim() || 'Destination' };
   nbq('#nb-steps').innerHTML = '';
   navChip.style.display = 'flex';
   $('track-stop-btn').style.display = 'inline-block';
   renderLoc(); renderSum(); setBoard(true);
-
+ 
+  // Every GPS fix: move the blue dot, update address/coordinates, re-route while you move
   const onFix = (pos) => { try { handleFix(pos); } catch (e) { nav.place = '⚠️ ' + e.message; renderLoc(); console.error(e); } };
   const handleFix = (pos) => {
-    if (!nav.title) return;
+    if (!nav.title) return;                       // tracking was stopped
     const { latitude: lat, longitude: lng } = pos.coords, acc = Math.round(pos.coords.accuracy || 0), here = L.latLng(lat, lng), u = toUTM(lng, lat);
     Object.assign(nav, { lat, lng, acc, utm: `${u[0].toFixed(1)} E, ${u[1].toFixed(1)} N` });
-
+ 
     if (!me) {
       me = L.marker(here, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).bindPopup('');
       halo = L.circle(here, { radius: acc, color: '#2563eb', weight: 1, fillOpacity: .1 });
@@ -585,13 +599,13 @@ function runTracker() {
     }
     me.setLatLng(here).setPopupContent(`<b>📍 You are here</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}<br>UTM ${nav.utm}`);
     halo.setLatLng(here).setRadius(acc);
-
-    if (routeCoords) {
+ 
+    if (routeCoords) {                            // off-route detection opens the board by itself
       const off = distToRoute(here, routeCoords);
       if (off > 40 && !offTrack) { offTrack = nav.off = true; renderSum(); setBoard(true); }
       else if (off < 25 && offTrack) { offTrack = nav.off = false; renderSum(); }
     }
-
+ 
     if (!routing) {
       lastRouted = here;
       routing = L.Routing.control({
@@ -608,25 +622,27 @@ function runTracker() {
       });
     } else if (lastRouted.distanceTo(here) > 15) {
       lastRouted = here;
-      routing.spliceWaypoints(0, 1, here);
+      routing.spliceWaypoints(0, 1, here);        // route restarts from the new position
       if (following) map.panTo(here);
     }
     renderLoc();
     reverseGeocode(lat, lng);
   };
-
+ 
   const onFail = (err) => {
     if (err.code === 1) { stopTracking(); alert("Location permission denied. Allow location for this site in your phone/browser settings (and open the link in Chrome/Safari, not inside WhatsApp)."); }
     else { nav.place = '⚠️ Weak GPS signal, still trying… (turn ON phone location)'; renderLoc(); }
   };
-
+ 
+  // Fast first fix + continuous watch so the marker follows you
   navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
   watchId = navigator.geolocation.watchPosition(onFix, onFail, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 });
 }
-
+ 
+// ▸ Tracker inputs — Enter (keydown is reliable on phone keyboards) or the Track / Stop buttons start and stop tracking.
 on('track-search-input', 'keydown', (e) => { if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); e.target.blur(); runTracker(); } });
 on('track-go-btn', 'click', runTracker);
 on('track-stop-btn', 'click', stopTracking);
-
-// ---------- 10. Initial Load ----------
+ 
+// ========== 10. START — load the data when the page opens ==========
 loadBuildingPermit();
