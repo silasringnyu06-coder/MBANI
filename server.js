@@ -13,7 +13,7 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Shared SQL Query Generator: full join across the 5 tables (information from the second server)
+// Shared SQL Query Generator: full join across the 5 tables
 const getBuildingPermitQuery = () => `
   SELECT
       -- 1. PROPRIETAIRE (Land Owner)
@@ -125,11 +125,9 @@ const getBuildingPermitQuery = () => `
 // Smart Local / Cloud Fallback Database Endpoint with Detailed Error Reporting
 app.get('/api/building-permit', async (req, res) => {
   try {
-    // Tries local database first (for your local laptop testing)
     const result = await db.localQuery(getBuildingPermitQuery());
     res.status(200).json(result.rows);
   } catch (localErr) {
-    // Automatically falls back to Supabase Cloud when local isn't available (e.g., on Render)
     try {
       const cloudResult = await db.cloudQuery(getBuildingPermitQuery());
       res.status(200).json(cloudResult.rows);
@@ -155,7 +153,51 @@ app.get('/api/cloud-building-permit', async (req, res) => {
   }
 });
 
-// Sync & Insert Endpoint (Saves to both Local PostgreSQL and Supabase Cloud simultaneously)
+// NEW: Mobile-Optimized Zoning BBox Endpoint for Leaflet (Using "Code" instead of "Zone")
+app.get('/api/zones/bbox', async (req, res) => {
+  const { minLng, minLat, maxLng, maxLat } = req.query;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        "Vocation_1" AS zone_type, 
+        "Code" AS zone_name,
+        "CES" AS ces,
+        "COS" AS cos,
+        "Hauteur_m_" AS hauteur_max,
+        ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geometry 
+      FROM urban_zones_mobile 
+      WHERE geom && ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 32632);
+    `;
+    
+    const result = await db.cloudQuery(query, [minLng, minLat, maxLng, maxLat]);
+    
+    const features = result.rows.map(row => ({
+      type: "Feature",
+      geometry: JSON.parse(row.geometry),
+      properties: {
+        id: row.id,
+        zone_type: row.zone_type || 'Zone Urbaine',
+        zone_name: row.zone_name || 'N/A',
+        ces: row.ces,
+        cos: row.cos,
+        hauteur_max: row.hauteur_max
+      }
+    }));
+
+    res.json({
+      type: "FeatureCollection",
+      features: features
+    });
+    
+  } catch (err) {
+    console.error('Zoning BBox Query Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch mobile zoning data', details: err.message });
+  }
+});
+
+// Sync & Insert Endpoint
 app.post('/api/sync-building-permit', async (req, res) => {
   const { numero_permis, personne_id, parcelle_id, usage_bati, status } = req.body;
   
@@ -243,7 +285,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           date_demande DATE,
           qualite_demandeur VARCHAR(20),
           operation_demandee VARCHAR(40),
-          usage_du_Bati VARCHAR(30),
+          "usage_du_Bati" VARCHAR(30),
           code_zone VARCHAR(10),
           nom_zone VARCHAR(150),
           largeur_voie_minimale_m NUMERIC(5,2),
@@ -301,7 +343,6 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
 // Migration Route: Sequentially copies all 5 tables to Supabase Cloud
 app.get('/api/migrate-data', async (req, res) => {
   try {
-    // 1. PROPRIETAIRE
     const localProp = await db.localQuery('SELECT * FROM proprietaire;');
     let propCount = 0;
     for (let row of localProp.rows) {
@@ -313,7 +354,6 @@ app.get('/api/migrate-data', async (req, res) => {
       propCount++;
     }
 
-    // 2. PERSONNE
     const localPersons = await db.localQuery('SELECT * FROM personne;');
     let personCount = 0;
     for (let row of localPersons.rows) {
@@ -325,7 +365,6 @@ app.get('/api/migrate-data', async (req, res) => {
       personCount++;
     }
 
-    // 3. PARCELLE
     const localParcels = await db.localQuery('SELECT * FROM parcelle;');
     let parcelCount = 0;
     for (let row of localParcels.rows) {
@@ -335,7 +374,6 @@ app.get('/api/migrate-data', async (req, res) => {
         [
           row.parcelle_id, row.proprietaire_id, row.plot_no, row.arrondissement, row.quartier, row.lieu_dit,
           row.cadastral_area, row.titre_foncier, row.lotissement, row.servitudes,
-          // Postgres lowercases unquoted column names, so the key is "num_tit_foncier_mère"
           row['num_tit_foncier_mère'] ?? row['num_Tit_Foncier_Mère'] ?? row.num_tit_foncier_mere ?? null,
           row.num_lot, row.co_owners, row.prop_cert_no, row.prop_cert_date, row.geom
         ]
@@ -343,7 +381,6 @@ app.get('/api/migrate-data', async (req, res) => {
       parcelCount++;
     }
 
-    // 4. CERTIFICAT D'URBANISME
     const localCU = await db.localQuery('SELECT * FROM certificat_urbanisme;');
     let cuCount = 0;
     for (let row of localCU.rows) {
@@ -355,14 +392,13 @@ app.get('/api/migrate-data', async (req, res) => {
       cuCount++;
     }
 
-    // 5. PERMIS DE CONSTRUIRE
     const localPermits = await db.localQuery('SELECT * FROM permis_construire;');
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrete_number, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_bati, nombre_places_parkings, hauteur_construction, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
+        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrete_number, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_Bati, nombre_places_parkings, hauteur_construction, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) ON CONFLICT (permis_id) DO NOTHING;`,
-        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_bati, row.nombre_places_parkings, row.hauteur_construction, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
+        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_Bati, row.nombre_places_parkings, row.hauteur_construction, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
       );
       permitCount++;
     }
