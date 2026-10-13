@@ -13,7 +13,7 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Updated SQL Query matching your exact schema and view structure
+// Shared SQL Query Generator: full join across the 5 tables
 const getBuildingPermitQuery = () => `
   SELECT
       -- 1. PROPRIETAIRE (Land Owner)
@@ -47,7 +47,7 @@ const getBuildingPermitQuery = () => `
       pa.titre_foncier,
       pa.lotissement,
       pa.servitudes,
-      pa.num_tit_foncier_mère AS num_tit_foncier_mere,
+      pa.num_Tit_Foncier_Mère AS num_tit_foncier_mere,
       pa.num_lot,
       pa.co_owners,
       pa.prop_cert_no,
@@ -62,7 +62,7 @@ const getBuildingPermitQuery = () => `
       cu.date_demande,
       cu.qualite_demandeur,
       cu.operation_demandee,
-      cu.usage_du_bati,
+      cu.usage_du_Bati AS cu_usage_bati,
       cu.code_zone,
       cu.nom_zone,
       cu.largeur_voie_minimale_m,
@@ -78,7 +78,6 @@ const getBuildingPermitQuery = () => `
       bp.permis_id,
       bp.numero_permis,
       bp.arrete_number,
-      bp.technical_file_no,
       bp.commission_date,
       bp.nature_travaux,
       bp.nombre_planchers,
@@ -87,7 +86,6 @@ const getBuildingPermitQuery = () => `
       bp.usage_bati,
       bp.nombre_places_parkings,
       bp.hauteur_construction,
-      bp.superficie_terrain,
       bp.building_cost,
       bp.cout_total_projet,
       bp.cos,
@@ -124,7 +122,7 @@ const getBuildingPermitQuery = () => `
   LEFT JOIN certificat_urbanisme cu ON bp.cu_id = cu.cu_id;
 `;
 
-// Fetch endpoints
+// Smart Local / Cloud Fallback Database Endpoint with Detailed Error Reporting
 app.get('/api/building-permit', async (req, res) => {
   try {
     const result = await db.localQuery(getBuildingPermitQuery());
@@ -134,6 +132,7 @@ app.get('/api/building-permit', async (req, res) => {
       const cloudResult = await db.cloudQuery(getBuildingPermitQuery());
       res.status(200).json(cloudResult.rows);
     } catch (cloudErr) {
+      console.error('Both Local and Cloud Query Error:', localErr.message, cloudErr.message);
       res.status(500).json({ 
         error: 'Server error fetching building permit from both databases',
         localError: localErr.message,
@@ -143,12 +142,90 @@ app.get('/api/building-permit', async (req, res) => {
   }
 });
 
-// Setup Tables in Supabase Cloud matching your complete schema
+// Cloud Database Endpoint
+app.get('/api/cloud-building-permit', async (req, res) => {
+  try {
+    const result = await db.cloudQuery(getBuildingPermitQuery());
+    res.status(200).json(result.rows);
+  } catch (err) {
+    console.error('Cloud Database Query Error:', err.message);
+    res.status(500).json({ error: 'Server error fetching cloud building permit', details: err.message });
+  }
+});
+
+// NEW: Mobile-Optimized Zoning BBox Endpoint for Leaflet (Using "Code" instead of "Zone")
+app.get('/api/zones/bbox', async (req, res) => {
+  const { minLng, minLat, maxLng, maxLat } = req.query;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        "Vocation_1" AS zone_type, 
+        "Code" AS zone_name,
+        "CES" AS ces,
+        "COS" AS cos,
+        "Hauteur_m_" AS hauteur_max,
+        ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geometry 
+      FROM urban_zones_mobile 
+      WHERE geom && ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 32632);
+    `;
+    
+    const result = await db.cloudQuery(query, [minLng, minLat, maxLng, maxLat]);
+    
+    const features = result.rows.map(row => ({
+      type: "Feature",
+      geometry: JSON.parse(row.geometry),
+      properties: {
+        id: row.id,
+        zone_type: row.zone_type || 'Zone Urbaine',
+        zone_name: row.zone_name || 'N/A',
+        ces: row.ces,
+        cos: row.cos,
+        hauteur_max: row.hauteur_max
+      }
+    }));
+
+    res.json({
+      type: "FeatureCollection",
+      features: features
+    });
+    
+  } catch (err) {
+    console.error('Zoning BBox Query Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch mobile zoning data', details: err.message });
+  }
+});
+
+// Sync & Insert Endpoint
+app.post('/api/sync-building-permit', async (req, res) => {
+  const { numero_permis, personne_id, parcelle_id, usage_bati, status } = req.body;
+  
+  const queryText = `
+    INSERT INTO permis_construire (numero_permis, personne_id, parcelle_id, usage_bati, status)
+    VALUES ($1, $2, $3, $4, $5)
+    RETURNING *;
+  `;
+  const values = [numero_permis, personne_id, parcelle_id, usage_bati, status];
+
+  try {
+    const result = await db.syncQuery(queryText, values);
+    res.status(201).json({
+      message: 'Successfully synced and inserted to both Local and Supabase Cloud databases!',
+      local: result.local.rows[0],
+      cloud: result.cloud.rows[0]
+    });
+  } catch (err) {
+    console.error('Database Sync Insertion Error:', err);
+    res.status(500).json({ error: 'Failed to sync and insert record across databases', details: err.message });
+  }
+});
+
+// Auto-Create Tables in Supabase Cloud from Backend
 app.get('/api/setup-cloud-tables', async (req, res) => {
   try {
     await db.cloudQuery(`CREATE EXTENSION IF NOT EXISTS postgis;`);
 
-    // 1. TABLE: PROPRIETAIRE
     await db.cloudQuery(`
       CREATE TABLE IF NOT EXISTS proprietaire (
           proprietaire_id SERIAL PRIMARY KEY,
@@ -163,7 +240,6 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
       );
     `);
 
-    // 2. TABLE: PERSONNE
     await db.cloudQuery(`
       CREATE TABLE IF NOT EXISTS personne (
           personne_id SERIAL PRIMARY KEY,
@@ -177,7 +253,6 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
       );
     `);
 
-    // 3. TABLE: PARCELLE
     await db.cloudQuery(`
       CREATE TABLE IF NOT EXISTS parcelle (
           parcelle_id SERIAL PRIMARY KEY,
@@ -195,12 +270,11 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           co_owners VARCHAR(255),
           prop_cert_no VARCHAR(50),
           prop_cert_date DATE,
-          geom GEOMETRY(Polygon, 32632) NOT NULL,
+          geom GEOMETRY(Polygon, 32632),
           superficie_calculee NUMERIC GENERATED ALWAYS AS (ST_Area(geom)) STORED
       );
     `);
 
-    // 4. TABLE: CERTIFICAT D'URBANISME
     await db.cloudQuery(`
       CREATE TABLE IF NOT EXISTS certificat_urbanisme (
           cu_id SERIAL PRIMARY KEY,
@@ -211,9 +285,9 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           date_demande DATE,
           qualite_demandeur VARCHAR(20),
           operation_demandee VARCHAR(40),
-          usage_du_Bati VARCHAR(30),
-          code_zone VARCHAR(10) NOT NULL,
-          nom_zone VARCHAR(150) NOT NULL,
+          "usage_du_Bati" VARCHAR(30),
+          code_zone VARCHAR(10),
+          nom_zone VARCHAR(150),
           largeur_voie_minimale_m NUMERIC(5,2),
           retrait_minimal_m NUMERIC(5,2),
           facade_minimale_m NUMERIC(5,2),
@@ -225,16 +299,14 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
       );
     `);
 
-    // 5. TABLE: PERMIS DE CONSTRUIRE
     await db.cloudQuery(`
       CREATE TABLE IF NOT EXISTS permis_construire (
           permis_id SERIAL PRIMARY KEY,
           personne_id INTEGER REFERENCES personne(personne_id) ON DELETE CASCADE,
           parcelle_id INTEGER REFERENCES parcelle(parcelle_id) ON DELETE CASCADE,
           cu_id INTEGER REFERENCES certificat_urbanisme(cu_id) ON DELETE SET NULL,
-          numero_permis VARCHAR(60) UNIQUE,
+          numero_permis VARCHAR(60),
           arrete_number VARCHAR(60),
-          technical_file_no VARCHAR(30),
           commission_date DATE,
           nature_travaux VARCHAR(40),
           nombre_planchers VARCHAR(30),
@@ -243,7 +315,6 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           usage_bati VARCHAR(30),
           nombre_places_parkings VARCHAR(20),
           hauteur_construction NUMERIC(5,2),
-          superficie_terrain NUMERIC(12,2),
           building_cost VARCHAR(30),
           cout_total_projet NUMERIC(12,2),
           cos NUMERIC(4,2),
@@ -257,109 +328,89 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           input_database_date DATE DEFAULT CURRENT_DATE,
           issue_date DATE,
           expiry_date DATE,
-          geom GEOMETRY(Polygon, 32632) NOT NULL,
+          geom GEOMETRY(Polygon, 32632),
           superficie_calculee NUMERIC GENERATED ALWAYS AS (ST_Area(geom)) STORED
       );
     `);
 
-    res.status(200).json({ message: 'All Supabase tables and PostGIS schemas created successfully!' });
+    res.status(200).json({ message: 'All Supabase tables and PostGIS schemas created successfully by the backend!' });
   } catch (err) {
+    console.error('Table setup error:', err);
     res.status(500).json({ error: 'Failed to create tables', details: err.message });
   }
 });
 
-// Sync handler function matching all 5 tables
-const pushLocalDataHandler = async (req, res) => {
+// Migration Route: Sequentially copies all 5 tables to Supabase Cloud
+app.get('/api/migrate-data', async (req, res) => {
   try {
     const localProp = await db.localQuery('SELECT * FROM proprietaire;');
+    let propCount = 0;
     for (let row of localProp.rows) {
       await db.cloudQuery(
         `INSERT INTO proprietaire (proprietaire_id, nom_complet, nui, telephone, email, adresse, sexe, cni, nationalite) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
-         ON CONFLICT (proprietaire_id) DO UPDATE SET
-           nom_complet = EXCLUDED.nom_complet, nui = EXCLUDED.nui, telephone = EXCLUDED.telephone, 
-           email = EXCLUDED.email, adresse = EXCLUDED.adresse, sexe = EXCLUDED.sexe, 
-           cni = EXCLUDED.cni, nationalite = EXCLUDED.nationalite;`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (proprietaire_id) DO NOTHING;`,
         [row.proprietaire_id, row.nom_complet, row.nui, row.telephone, row.email, row.adresse, row.sexe, row.cni, row.nationalite]
       );
+      propCount++;
     }
 
     const localPersons = await db.localQuery('SELECT * FROM personne;');
+    let personCount = 0;
     for (let row of localPersons.rows) {
       await db.cloudQuery(
         `INSERT INTO personne (personne_id, nom_complet, nui, telephone, email, adresse, sexe, cni) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) 
-         ON CONFLICT (personne_id) DO UPDATE SET
-           nom_complet = EXCLUDED.nom_complet, nui = EXCLUDED.nui, telephone = EXCLUDED.telephone, 
-           email = EXCLUDED.email, adresse = EXCLUDED.adresse, sexe = EXCLUDED.sexe, cni = EXCLUDED.cni;`,
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) ON CONFLICT (personne_id) DO NOTHING;`,
         [row.personne_id, row.nom_complet, row.nui, row.telephone, row.email, row.adresse, row.sexe, row.cni]
       );
+      personCount++;
     }
 
     const localParcels = await db.localQuery('SELECT * FROM parcelle;');
+    let parcelCount = 0;
     for (let row of localParcels.rows) {
       await db.cloudQuery(
         `INSERT INTO parcelle (parcelle_id, proprietaire_id, plot_no, arrondissement, quartier, lieu_dit, cadastral_area, titre_foncier, lotissement, servitudes, num_Tit_Foncier_Mère, num_lot, co_owners, prop_cert_no, prop_cert_date, geom) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) 
-         ON CONFLICT (parcelle_id) DO UPDATE SET
-           proprietaire_id = EXCLUDED.proprietaire_id, plot_no = EXCLUDED.plot_no, 
-           arrondissement = EXCLUDED.arrondissement, quartier = EXCLUDED.quartier, lieu_dit = EXCLUDED.lieu_dit, 
-           cadastral_area = EXCLUDED.cadastral_area, titre_foncier = EXCLUDED.titre_foncier, 
-           lotissement = EXCLUDED.lotissement, servitudes = EXCLUDED.servitudes, 
-           num_Tit_Foncier_Mère = EXCLUDED.num_Tit_Foncier_Mère, num_lot = EXCLUDED.num_lot, 
-           co_owners = EXCLUDED.co_owners, prop_cert_no = EXCLUDED.prop_cert_no, prop_cert_date = EXCLUDED.prop_cert_date, geom = EXCLUDED.geom;`,
-        [row.parcelle_id, row.proprietaire_id, row.plot_no, row.arrondissement, row.quartier, row.lieu_dit, row.cadastral_area, row.titre_foncier, row.lotissement, row.servitudes, row.num_Tit_Foncier_Mère || row.num_tit_foncier_mere, row.num_lot, row.co_owners, row.prop_cert_no, row.prop_cert_date, row.geom]
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16) ON CONFLICT (parcelle_id) DO NOTHING;`,
+        [
+          row.parcelle_id, row.proprietaire_id, row.plot_no, row.arrondissement, row.quartier, row.lieu_dit,
+          row.cadastral_area, row.titre_foncier, row.lotissement, row.servitudes,
+          row['num_tit_foncier_mère'] ?? row['num_Tit_Foncier_Mère'] ?? row.num_tit_foncier_mere ?? null,
+          row.num_lot, row.co_owners, row.prop_cert_no, row.prop_cert_date, row.geom
+        ]
       );
+      parcelCount++;
     }
 
     const localCU = await db.localQuery('SELECT * FROM certificat_urbanisme;');
+    let cuCount = 0;
     for (let row of localCU.rows) {
       await db.cloudQuery(
-        `INSERT INTO certificat_urbanisme (cu_id, personne_id, parcelle_id, cu_number, num_dossier, date_demande, qualite_demandeur, operation_demandee, "usage_du_Bati", code_zone, nom_zone, largeur_voie_minimale_m, retrait_minimal_m, facade_minimale_m, superficie_parcelle_minimale_m2, activites_interdites, date_delivrance, date_expiration, statut)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
-         ON CONFLICT (cu_id) DO UPDATE SET
-           personne_id = EXCLUDED.personne_id, parcelle_id = EXCLUDED.parcelle_id, cu_number = EXCLUDED.cu_number, 
-           num_dossier = EXCLUDED.num_dossier, date_demande = EXCLUDED.date_demande, qualite_demandeur = EXCLUDED.qualite_demandeur, 
-           operation_demandee = EXCLUDED.operation_demandee, "usage_du_Bati" = EXCLUDED."usage_du_Bati", 
-           code_zone = EXCLUDED.code_zone, nom_zone = EXCLUDED.nom_zone, largeur_voie_minimale_m = EXCLUDED.largeur_voie_minimale_m, 
-           retrait_minimal_m = EXCLUDED.retrait_minimal_m, facade_minimale_m = EXCLUDED.facade_minimale_m, 
-           superficie_parcelle_minimale_m2 = EXCLUDED.superficie_parcelle_minimale_m2, activites_interdites = EXCLUDED.activites_interdites, 
-           date_delivrance = EXCLUDED.date_delivrance, date_expiration = EXCLUDED.date_expiration, statut = EXCLUDED.statut;`,
-        [ row.cu_id, row.personne_id, row.parcelle_id,  row.cu_number,  row.num_dossier,  row.date_demande,  row.qualite_demandeur,  row.operation_demandee,  row["usage_du_Bati"] || row.usage_du_bati,  row.code_zone, row.nom_zone, row.largeur_voie_minimale_m, row.retrait_minimal_m,  row.facade_minimale_m, row.superficie_parcelle_minimale_m2, row.activites_interdites, row.date_delivrance,  row.date_expiration,  row.statut
-]
-);
+        `INSERT INTO certificat_urbanisme (cu_id, personne_id, parcelle_id, cu_number, num_dossier, date_demande, qualite_demandeur, operation_demandee, usage_du_bati, code_zone, nom_zone, largeur_voie_minimale_m, retrait_minimal_m, facade_minimale_m, superficie_parcelle_minimale_m2, activites_interdites, date_delivrance, date_expiration, statut)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19) ON CONFLICT (cu_id) DO NOTHING;`,
+        [row.cu_id, row.personne_id, row.parcelle_id, row.cu_number, row.num_dossier, row.date_demande, row.qualite_demandeur, row.operation_demandee, row.usage_du_bati, row.code_zone, row.nom_zone, row.largeur_voie_minimale_m, row.retrait_minimal_m, row.facade_minimale_m, row.superficie_parcelle_minimale_m2, row.activites_interdites, row.date_delivrance, row.date_expiration, row.statut]
+      );
+      cuCount++;
     }
 
     const localPermits = await db.localQuery('SELECT * FROM permis_construire;');
+    let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrete_number, technical_file_no, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_bati, nombre_places_parkings, hauteur_construction, superficie_terrain, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30) 
-         ON CONFLICT (permis_id) DO UPDATE SET
-           personne_id = EXCLUDED.personne_id, parcelle_id = EXCLUDED.parcelle_id, cu_id = EXCLUDED.cu_id, 
-           numero_permis = EXCLUDED.numero_permis, arrete_number = EXCLUDED.arrete_number, technical_file_no = EXCLUDED.technical_file_no, 
-           commission_date = EXCLUDED.commission_date, nature_travaux = EXCLUDED.nature_travaux, nombre_planchers = EXCLUDED.nombre_planchers, 
-           etages_hors_sol = EXCLUDED.etages_hors_sol, etages_sous_sol = EXCLUDED.etages_sous_sol, usage_bati = EXCLUDED.usage_bati, 
-           nombre_places_parkings = EXCLUDED.nombre_places_parkings, hauteur_construction = EXCLUDED.hauteur_construction, 
-           superficie_terrain = EXCLUDED.superficie_terrain, building_cost = EXCLUDED.building_cost, cout_total_projet = EXCLUDED.cout_total_projet, 
-           cos = EXCLUDED.cos, ces = EXCLUDED.ces, recul_voies_publiques = EXCLUDED.recul_voies_publiques, 
-           recul_limites_separatives = EXCLUDED.recul_limites_separatives, title_rec_no = EXCLUDED.title_rec_no, 
-           architecte_responsable = EXCLUDED.architecte_responsable, architect_onac_no = EXCLUDED.architect_onac_no, 
-           status = EXCLUDED.status, input_database_date = EXCLUDED.input_database_date, issue_date = EXCLUDED.issue_date, 
-           expiry_date = EXCLUDED.expiry_date, geom = EXCLUDED.geom;`,
-        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.technical_file_no, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_bati, row.nombre_places_parkings, row.hauteur_construction, row.superficie_terrain, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
+        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrete_number, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_Bati, nombre_places_parkings, hauteur_construction, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) ON CONFLICT (permis_id) DO NOTHING;`,
+        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_Bati, row.nombre_places_parkings, row.hauteur_construction, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
       );
+      permitCount++;
     }
 
-    res.status(200).json({ message: 'Successfully synced local data to Supabase Cloud!' });
+    res.status(200).json({ 
+      message: `Successfully migrated ${propCount} proprietaires, ${personCount} personnes, ${parcelCount} parcelles, ${cuCount} certificats d'urbanisme, and ${permitCount} permis de construire to Supabase Cloud!` 
+    });
   } catch (err) {
-    res.status(500).json({ error: 'Failed to push local data', details: err.message });
+    console.error('Migration error:', err);
+    res.status(500).json({ error: 'Migration failed', details: err.message });
   }
-};
-
-// Expose endpoint routes
-app.get('/api/push-local-data', pushLocalDataHandler);
-app.get('/api/migrate-data', pushLocalDataHandler);
+});
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
