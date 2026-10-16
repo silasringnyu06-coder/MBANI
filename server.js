@@ -197,6 +197,122 @@ app.get('/api/zones/bbox', async (req, res) => {
   }
 });
 
+// NEW: Mobile-Optimized Quartiers BBox Endpoint for Leaflet (Fixed to EPSG:4326 matching table SRID)
+app.get('/api/quartiers/bbox', async (req, res) => {
+  const { minLng, minLat, maxLng, maxLat } = req.query;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        name,
+        commune,
+        ST_AsGeoJSON(geom) AS geometry 
+      FROM quartier 
+      WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326);
+    `;
+    
+    const result = await db.cloudQuery(query, [minLng, minLat, maxLng, maxLat]);
+    
+    const features = result.rows.map(row => ({
+      type: "Feature",
+      geometry: typeof row.geometry === 'string' ? JSON.parse(row.geometry) : row.geometry,
+      properties: {
+        id: row.id,
+        name: row.name || 'Unknown Quartier',
+        commune: row.commune || 'N/A'
+      }
+    }));
+
+    res.json({
+      type: "FeatureCollection",
+      features: features
+    });
+    
+  } catch (err) {
+    console.error('Quartiers BBox Query Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch quartiers data', details: err.message });
+  }
+});
+
+// NEW: Spatial Lookup Endpoint for Parcel Zoning & Quartier Diagnosis
+app.get('/api/parcelle/spatial-info/:id', async (req, res) => {
+  const parcelId = req.params.id;
+
+  try {
+    const query = `
+      SELECT 
+        pa.parcelle_id,
+        pa.plot_no,
+        pa.titre_foncier,
+        
+        -- Detect intersecting Quartier name and commune
+        q.name AS quartier_nom,
+        q.commune AS commune_nom,
+
+        -- Detect intersecting POS Zone regulations
+        z."Vocation_1" AS zone_type,
+        z."Code" AS zone_code,
+        z."CES" AS zone_ces,
+        z."COS" AS zone_cos,
+        z."Hauteur_m_" AS zone_hauteur_max
+
+      FROM parcelle pa
+
+      -- Spatial Join with Quartier layer (WGS 84 / 4326)
+      LEFT JOIN quartier q 
+        ON ST_Intersects(ST_Transform(pa.geom, 4326), q.geom)
+
+      -- Spatial Join with Urban Zoning layer (UTM 32N / 32632)
+      LEFT JOIN urban_zones_mobile z 
+        ON ST_Intersects(pa.geom, z.geom)
+
+      WHERE pa.parcelle_id = $1
+      LIMIT 1;
+    `;
+
+    const result = await db.cloudQuery(query, [parcelId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Parcel not found or outside covered spatial data limits." });
+    }
+
+    const info = result.rows[0];
+
+    // Evaluate constructibility based on zone vocation/code
+    const vocation = (info.zone_type || '').toLowerCase();
+    let constructibilityStatus = "Constructible";
+    let statusColor = "#2ecc71"; // Green
+
+    if (vocation.includes('non constructible') || vocation.includes('pente') || vocation.includes('inondable') || vocation.includes('marécage') || vocation.includes('vert')) {
+      constructibilityStatus = "Non-Constructible (Zone Protégée/Risque)";
+      statusColor = "#e74c3c"; // Red
+    } else if (vocation.includes('sous condition') || vocation.includes('special')) {
+      constructibilityStatus = "Constructibilité Sous Condition";
+      statusColor = "#f39c12"; // Orange
+    }
+
+    res.json({
+      parcel_id: info.parcelle_id,
+      plot_no: info.plot_no,
+      titre_foncier: info.titre_foncier,
+      quartier: info.quartier_nom || 'N/A',
+      commune: info.commune_nom || 'N/A',
+      zone_code: info.zone_code || 'N/A',
+      zone_vocation: info.zone_type || 'Zone Urbaine',
+      ces_max: info.zone_ces || 'N/A',
+      cos_max: info.zone_cos || 'N/A',
+      hauteur_max: info.zone_hauteur_max || 'N/A',
+      constructibility_status: constructibilityStatus,
+      status_color: statusColor
+    });
+
+  } catch (err) {
+    console.error("Spatial Info Error:", err.message);
+    res.status(500).json({ error: "Failed to evaluate spatial overlap", details: err.message });
+  }
+});
+
 // Sync & Insert Endpoint
 app.post('/api/sync-building-permit', async (req, res) => {
   const { numero_permis, personne_id, parcelle_id, usage_bati, status } = req.body;
