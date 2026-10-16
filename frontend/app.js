@@ -44,7 +44,6 @@ function checkZoningCompliance(r) {
   const zone = n ? `Yaoundé ${n}` : 'Default', rules = zoneRules(n);
 
   const area = parseFloat(r.cadastral_area || r.parcel_calculated_area || 0);
-  // building FOOTPRINT (not the terrain area, which made CES ≈ 100% for every permit)
   const built = parseFloat(r.building_calculated_area || 0);
 
   const flRaw = String(r.etages_hors_sol || r.nombre_planchers || '1');
@@ -127,15 +126,131 @@ const osmLayer = location.protocol === 'file:'
   ? L.tileLayer('https://{s}.tile.openstreetmap.fr/osmfr/{z}/{x}/{y}.png', { maxZoom: 19, subdomains: 'abc', attribution: '&copy; OpenStreetMap contributors, OSM France' })
   : L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 19, attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' });
 
+const streetsEsri = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' });
+
+const geojsonGroup = L.featureGroup().addTo(map);
+const trackingLayerGroup = L.layerGroup().addTo(map);
+
+// ---------- ZONING DYNAMIC BBOX LAYER ----------
+function getZoneStyle(feature) {
+  const zoneType = feature.properties.zone_type || '';
+  let fillColor = '#3388ff';
+  if (zoneType.includes('habitat')) fillColor = '#2ecc71';
+  else if (zoneType.includes('commercial')) fillColor = '#e74c3c';
+  else if (zoneType.includes('industriel')) fillColor = '#9b59b6';
+  else if (zoneType.includes('vert')) fillColor = '#27ae60';
+  return { fillColor: fillColor, weight: 1, opacity: 1, color: 'white', dashArray: '3', fillOpacity: 0.4 };
+}
+
+let zoningLayer = L.geoJson(null, {
+  style: getZoneStyle,
+  onEachFeature: function (feature, layer) {
+    if (feature.properties) {
+      const p = feature.properties;
+      layer.bindPopup(`
+        <div style="font-family: sans-serif; font-size:12px;">
+          <strong>Zone Code:</strong> ${p.zone_name || 'N/A'}<br>
+          <strong>Vocation:</strong> ${p.zone_type || 'N/A'}<br>
+          <strong>CES Max:</strong> ${p.ces || 'N/A'}<br>
+          <strong>COS Max:</strong> ${p.cos || 'N/A'}<br>
+          <strong>Hauteur Max:</strong> ${p.hauteur_max || 'N/A'}m
+        </div>
+      `);
+    }
+  }
+});
+
+// ---------- QUARTIERS DYNAMIC BBOX LAYER ----------
+let quartiersLayer = L.geoJson(null, {
+  style: {
+    color: "#2c3e50",       // Dark border color for neighborhood boundaries
+    weight: 1.5,
+    fillColor: "#3498db",   // Blue fill color
+    fillOpacity: 0.15       // Light opacity so underlying map features remain visible
+  },
+  onEachFeature: function (feature, layer) {
+    if (feature.properties) {
+      const p = feature.properties;
+      layer.bindPopup(`
+        <div style="font-family: sans-serif; font-size:12px;">
+          <h4 style="margin: 0 0 5px; color: #2c3e50;">${p.name || 'Unknown Quartier'}</h4>
+          <p style="margin: 3px 0;"><strong>Commune:</strong> ${p.commune || 'N/A'}</p>
+        </div>
+      `);
+    }
+  }
+});
+
 L.control.layers({
   "Google Satellite": googleSatellite,
   "Google Satellite Hybrid": gTile('y'),
   "OpenStreetMap": osmLayer,
-  "Streets (Esri)": L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}', { maxZoom: 19, attribution: 'Tiles &copy; Esri' })
+  "Streets (Esri)": streetsEsri
+}, {
+  "POS Zoning (Yaoundé)": zoningLayer,
+  "Quartiers (Yaoundé)": quartiersLayer
 }).addTo(map);
 
-const geojsonGroup = L.featureGroup().addTo(map);
-const trackingLayerGroup = L.layerGroup().addTo(map);
+zoningLayer.addTo(map);
+quartiersLayer.addTo(map);
+
+function getApiBaseUrl() {
+  const h = location.hostname;
+  const local = h === 'localhost' || h === '127.0.0.1' || location.protocol === 'file:';
+  const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
+  return local ? 'http://localhost:5000' : lan ? `http://${h}:5000` : 'https://mbani.onrender.com';
+}
+
+async function loadZoningData() {
+  const bounds = map.getBounds();
+  const minLng = bounds.getWest();
+  const minLat = bounds.getSouth();
+  const maxLng = bounds.getEast();
+  const maxLat = bounds.getNorth();
+
+  if (map.getZoom() < 12) {
+    zoningLayer.clearLayers();
+    return;
+  }
+
+  try {
+    const base = getApiBaseUrl();
+    const response = await fetch(`${base}/api/zones/bbox?minLng=${minLng}&minLat=${minLat}&maxLng=${maxLng}&maxLat=${maxLat}`);
+    const data = await response.json();
+    zoningLayer.clearLayers();
+    zoningLayer.addData(data);
+  } catch (err) {
+    console.error('Error loading zoning layer:', err);
+  }
+}
+
+async function loadQuartiersData() {
+  const bounds = map.getBounds();
+  const minLng = bounds.getWest();
+  const minLat = bounds.getSouth();
+  const maxLng = bounds.getEast();
+  const maxLat = bounds.getNorth();
+
+  if (map.getZoom() < 10) {
+    quartiersLayer.clearLayers();
+    return;
+  }
+
+  try {
+    const base = getApiBaseUrl();
+    const response = await fetch(`${base}/api/quartiers/bbox?minLng=${minLng}&minLat=${minLat}&maxLng=${maxLng}&maxLat=${maxLat}`);
+    const data = await response.json();
+    quartiersLayer.clearLayers();
+    quartiersLayer.addData(data);
+  } catch (err) {
+    console.error('Error loading quartiers layer:', err);
+  }
+}
+
+map.on('moveend', () => {
+  loadZoningData();
+  loadQuartiersData();
+});
 
 map.createPane('parcelPane').style.zIndex = 410;
 map.createPane('buildingPane').style.zIndex = 420;
@@ -158,11 +273,7 @@ function setDataStatus(msg, type = '') {
 }
 
 function backendUrl() {
-  const h = location.hostname;
-  const local = h === 'localhost' || h === '127.0.0.1' || location.protocol === 'file:';
-  const lan = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(h);
-  const base = local ? 'http://localhost:5000' : lan ? `http://${h}:5000` : 'https://mbani.onrender.com';
-  return `${base}/api/building-permit`;
+  return `${getApiBaseUrl()}/api/building-permit`;
 }
 
 async function loadBuildingPermit() {
@@ -176,6 +287,8 @@ async function loadBuildingPermit() {
     renderTableAndMap(globalPermitData);
     setDataStatus(`✅ ${globalPermitData.length} record(s) loaded.`, 'ok');
     setTimeout(() => setDataStatus(''), 4000);
+    loadZoningData();
+    loadQuartiersData();
   } catch (err) {
     console.error('Error fetching data:', err);
     $('permit-table-body').innerHTML = `<tr><td colspan="7" style="text-align:center;color:red;">Failed to load data from the server.</td></tr>`;
@@ -280,6 +393,38 @@ function popupHTML(title, color, r, comp, raw, idx) {
     <a href="#" onclick="showDetails(${idx}); return false;">View Details</a></div>`;
 }
 
+// ---------- SPATIAL DIAGNOSTIC POPUP FUNCTION (PARCEL) ----------
+async function fetchAndShowParcelDiagnostic(parcelId, layer, fallbackIdx) {
+  try {
+    const base = getApiBaseUrl();
+    const response = await fetch(`${base}/api/parcelle/spatial-info/${parcelId}`);
+    
+    if (!response.ok) throw new Error("Failed to fetch spatial info");
+    
+    const data = await response.json();
+
+    const diagnosticHTML = `
+      <div style="font-family: sans-serif; font-size:12px; width: 240px;">
+        <strong style="color:#0284c7; font-size:14px;">📍 Diagnostic Foncier & Urbanisme</strong><br><br>
+        
+        <div style="background:${data.status_color}; color:#fff; padding:5px 8px; border-radius:4px; font-weight:bold; margin-bottom:8px; text-align:center;">
+          ${data.constructibility_status}
+        </div>
+
+        <strong>🏡 Quartier:</strong> ${data.quartier} (${data.commune})<br>
+        <strong>🏛️ Zone POS:</strong> ${data.zone_code} - ${data.zone_vocation}<br>
+        <strong>📏 Limit Rules:</strong> CES: ${data.ces_max} | COS: ${data.cos_max} | H: ${data.hauteur_max}m<br><br>
+        <a href="#" onclick="showDetails(${fallbackIdx}); return false;">View Full Details</a>
+      </div>
+    `;
+
+    layer.bindPopup(diagnosticHTML).openPopup();
+
+  } catch (err) {
+    console.error("Failed to load parcel spatial diagnostic:", err);
+  }
+}
+
 function renderTableAndMap(data) {
   const body = $('permit-table-body');
   body.innerHTML = '';
@@ -306,7 +451,17 @@ function renderTableAndMap(data) {
     ].forEach(([raw, kind, title, color]) => {
       const geo = raw && toWGS84Geom(raw);
       if (!geo) return;
-      const l = L.geoJSON(geo, { style: STYLE[kind], pane: PANE[kind] }).bindPopup(popupHTML(title, color, r, comp, raw, idx));
+      const l = L.geoJSON(geo, { style: STYLE[kind], pane: PANE[kind] });
+      
+      // Separate Click Actions: Parcel shows Diagnostic, Building shows Permit Summary
+      if (kind === 'parcel' && r.parcelle_id) {
+        l.on('click', () => {
+          fetchAndShowParcelDiagnostic(r.parcelle_id, l, idx);
+        });
+      } else {
+        l.bindPopup(popupHTML(title, color, r, comp, raw, idx));
+      }
+
       g.kinds[kind].push(l);
       g.addLayer(l);
     });
@@ -387,10 +542,7 @@ function showDetails(index) {
     `, true)}
 
     ${collapsibleSection('👤 2. Applicant Information (Personne)', `
-      ${item('Full Name', r.name)}${item('NUI', r.nui)}
-      ${item('Phone', r.telephone)}${item('Email', r.email)}
-      ${item('Address', r.adresse)}${item('Sex', r.sexe)}
-      ${item('CNI', r.cni)}
+      ${item('Full Name', r.name)}${item('NUI', r.nui)}${item('Phone', r.telephone)}${item('Email', r.email)}${item('Address', r.adresse)}${item('Sex', r.sexe)}${item('CNI', r.cni)}
     `, false)}
 
     ${collapsibleSection('🗺️ 3. Parcel & Cadastre Details (Parcelle)', `
@@ -408,10 +560,8 @@ function showDetails(index) {
       ${item('Date Demande', r.date_demande)}${item('Qualité Demandeur', r.qualite_demandeur)}
       ${item('Opération Demandée', r.operation_demandee)}${item('Usage du Bâti (CU)', r.cu_usage_bati)}
       ${item('Code Zone', r.code_zone)}${item('Nom Zone', r.nom_zone)}
-      ${item('Min Road Width', r.largeur_voie_minimale_m && r.largeur_voie_minimale_m + ' m')}
-      ${item('Min Setback', r.retrait_minimal_m && r.retrait_minimal_m + ' m')}
-      ${item('Min Facade', r.facade_minimale_m && r.facade_minimale_m + ' m')}
-      ${item('Min Parcel Area', r.superficie_parcelle_minimale_m2 && r.superficie_parcelle_minimale_m2 + ' m²')}
+      ${item('Min Road Width', r.largeur_voie_minimale_m && r.largeur_voie_minimale_m + ' m')}${item('Min Setback', r.retrait_minimal_m && r.retrait_minimal_m + ' m')}
+      ${item('Min Facade', r.facade_minimale_m && r.facade_minimale_m + ' m')}${item('Min Parcel Area', r.superficie_parcelle_minimale_m2 && r.superficie_parcelle_minimale_m2 + ' m²')}
       ${item('Prohibited Activities', r.activites_interdites)}${item('CU Status', r.statut_cu)}
       ${item('CU Issue Date', r.date_delivrance)}${item('CU Expiry Date', r.date_expiration)}
     `, false)}
@@ -422,17 +572,9 @@ function showDetails(index) {
       ${item('Nature Travaux', r.nature_travaux)}${item('Nombre Planchers', r.nombre_planchers)}
       ${item('Etages Hors-Sol', r.etages_hors_sol)}${item('Etages Sous-Sol', r.etages_sous_sol)}
       ${item('Building Use', r.usage_bati)}${item('Parking Places', r.nombre_places_parkings)}
-      ${item('Height', r.hauteur_construction && r.hauteur_construction + ' m')}
-      ${item('Terrain Area', r.superficie_terrain && r.superficie_terrain + ' m²')}
-      ${item('Calculated Area', r.building_calculated_area && r.building_calculated_area + ' m²')}
-      ${item('Building Cost', r.building_cost)}${item('Total Project Cost', r.cout_total_projet)}
-      ${item('COS', r.cos)}${item('CES', r.ces)}
-      ${item('Front Setback', r.recul_voies_publiques && r.recul_voies_publiques + ' m')}
-      ${item('Side Setback', r.recul_limites_separatives && r.recul_limites_separatives + ' m')}
-      ${item('Title Rec No', r.title_rec_no)}${item('Lead Architect', r.architecte_responsable)}
-      ${item('Architect ONAC No', r.architect_onac_no)}${item('Permit Status', r.statut_permis)}
-      ${item('Input Database Date', r.input_database_date)}${item('Issue Date', r.issue_date)}
-      ${item('Expiry Date', r.expiry_date)}
+      ${item('Height', r.hauteur_construction && r.hauteur_construction + ' m')}${item('Terrain Area', r.superficie_terrain && r.superficie_terrain + ' m²')}
+      ${item('Calculated Area', r.building_calculated_area && r.building_calculated_area + ' m²')}${item('Building Cost', r.building_cost)}${item('Total Project Cost', r.cout_total_projet)}${item('COS', r.cos)}${item('CES', r.ces)}${item('Front Setback', r.recul_voies_publiques && r.recul_voies_publiques + ' m')}
+      ${item('Side Setback', r.recul_limites_separatives && r.recul_limites_separatives + ' m')}${item('Title Rec No', r.title_rec_no)}${item('Lead Architect', r.architecte_responsable)}${item('Architect ONAC No', r.architect_onac_no)}${item('Permit Status', r.statut_permis)}${item('Input Database Date', r.input_database_date)}${item('Issue Date', r.issue_date)}${item('Expiry Date', r.expiry_date)}
     `, false)}`;
   $('detail-modal').style.display = 'flex';
 }
@@ -460,35 +602,35 @@ on('search-input', 'input', (e) => {
   if (q && filtered.length === 1) focusOnPermit(filtered[0].__key);
 });
 
-// ---------- 9. Live GPS Tracker & Road Routing ----------
+// ========== 9. LIVE GPS TRACKER — uses YOUR actual live location as starting point ==========
 const navBoard = $('nav-board'), navChip =$('nav-chip'), nbq = (s) => navBoard.querySelector(s);
 let routing = null, watchId = null, me = null, halo = null, stepMarker = null, route = null, routeCoords = null;
 let following = true, offTrack = false, boardHidden = false, lastRouted = null, lastGeo = null, nav = {};
 [navBoard, navChip].forEach(el => { L.DomEvent.disableClickPropagation(el); L.DomEvent.disableScrollPropagation(el); });
 if (innerWidth > 640) nbq('#nb-dir').open = true;
-
+ 
 function setBoard(visible) { boardHidden = !visible; navBoard.style.display = visible && nav.title ? 'block' : 'none'; }
 nbq('.nav-x').onclick = () => setBoard(false);
 $('chip-show').onclick = () => setBoard(boardHidden);$('chip-stop').onclick = () => stopTracking();
 map.on('dragstart', () => { following = false; renderLoc(); });
-
+ 
 function renderLoc() {
-  nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating you…')}</div>
+  nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating your live position…')}</div>
     ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} \vert{} UTM${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
   const rc = nbq('#recenter');
   if (rc) rc.onclick = (e) => { e.preventDefault(); following = true; me && map.panTo(me.getLatLng()); renderLoc(); };
 }
-
+ 
 function renderSum() {
   const km = nav.dist >= 1000 ? (nav.dist / 1000).toFixed(1) + ' km' : Math.round(nav.dist || 0) + ' m';
-  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route…'}</div>
+  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
     <div class="sub">🎯 ${nav.title || ''}</div>
     ${nav.off ? '<div class="sub" style="color:#dc2626;font-weight:700">⚠️ Off route — recalculating…</div>' : ''}`;
 }
-
+ 
 const ICONS = { depart: 'A', arrive: '🎯', continue: '↑', 'bear-right': '↗️', 'turn-right': '↱', 'sharp-right': '↘️',
   'u-turn': '↩️', 'sharp-left': '↙️', 'turn-left': '↰', 'bear-left': '↖️', 'enter-roundabout': '⟳' };
-
+ 
 function renderSteps(rt) {
   route = rt;
   try {
@@ -500,7 +642,7 @@ function renderSteps(rt) {
     }).join('');
   } catch (e) { nbq('#nb-steps').innerHTML = ''; }
 }
-
+ 
 nbq('#nb-steps').addEventListener('click', (e) => {
   const row = e.target.closest('.st');
   if (!row || !route) return;
@@ -518,7 +660,7 @@ nbq('#nb-steps').addEventListener('click', (e) => {
   map.panBy([0, navBoard.offsetHeight / 2]);
   stepMarker.openPopup();
 });
-
+ 
 async function reverseGeocode(lat, lng) {
   if (lastGeo && L.latLng(lastGeo).distanceTo([lat, lng]) < 100) return;
   lastGeo = [lat, lng];
@@ -528,7 +670,7 @@ async function reverseGeocode(lat, lng) {
     renderLoc();
   } catch (e) {}
 }
-
+ 
 function distToRoute(p, coords) {
   const k = Math.cos(p.lat * Math.PI / 180), M = 111320, xy = (c) => [(c.lng - p.lng) * k * M, (c.lat - p.lat) * M];
   let best = Infinity;
@@ -539,7 +681,7 @@ function distToRoute(p, coords) {
   }
   return best;
 }
-
+ 
 function stopTracking() {
   if (watchId !== null) navigator.geolocation.clearWatch(watchId);
   watchId = me = halo = lastRouted = lastGeo = stepMarker = route = routeCoords = null;
@@ -549,84 +691,111 @@ function stopTracking() {
   navBoard.style.display = navChip.style.display = 'none';
   $('track-stop-btn').style.display = 'none';
 }
-
+ 
 function runTracker() {
   const query = $('track-search-input').value.trim().toLowerCase();
-  if (!query) return;
+  if (!query) return alert("Please enter a permit or property number to navigate to!");
   stopTracking();
   following = true;
-
+ 
   const record = globalPermitData.find(r => matches(r, query));
   if (!record) return alert("No matching permit or house found!");
   if (!navigator.geolocation) return alert("Geolocation is not supported by your browser");
   if (!window.isSecureContext) return alert("Live GPS only works on an HTTPS page. Open the https:// link of this site on your phone.");
-
+ 
   const key = record.__key || (record.permis_id || record.numero_permis).toString(), g = layersMap[key];
   if (!g) return alert("This record has no geometry to navigate to.");
   if (!geojsonGroup.hasLayer(g)) { geojsonGroup.addLayer(g); applyMode(); }
   const target = g.bnds.getCenter();
-
+ 
   nav = { title: `${record.numero_permis || ''} ${record.name ? '— ' + record.name : ''}`.trim() || 'Destination' };
   nbq('#nb-steps').innerHTML = '';
   navChip.style.display = 'flex';
   $('track-stop-btn').style.display = 'inline-block';
   renderLoc(); renderSum(); setBoard(true);
 
-  const onFix = (pos) => { try { handleFix(pos); } catch (e) { nav.place = '⚠️ ' + e.message; renderLoc(); console.error(e); } };
-  const handleFix = (pos) => {
-    if (!nav.title) return;
-    const { latitude: lat, longitude: lng } = pos.coords, acc = Math.round(pos.coords.accuracy || 0), here = L.latLng(lat, lng), u = toUTM(lng, lat);
+  // TRUE LIVE GPS: Obtain user's immediate position before initializing routing control
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const { latitude: lat, longitude: lng } = pos.coords;
+    const initialHere = L.latLng(lat, lng);
+    const acc = Math.round(pos.coords.accuracy || 0);
+    const u = toUTM(lng, lat);
+    
     Object.assign(nav, { lat, lng, acc, utm: `${u[0].toFixed(1)} E, ${u[1].toFixed(1)} N` });
 
-    if (!me) {
-      me = L.marker(here, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).bindPopup('');
-      halo = L.circle(here, { radius: acc, color: '#2563eb', weight: 1, fillOpacity: .1 });
-      trackingLayerGroup.addLayer(halo).addLayer(me);
-    }
-    me.setLatLng(here).setPopupContent(`<b>📍 You are here</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}<br>UTM ${nav.utm}`);
-    halo.setLatLng(here).setRadius(acc);
+    me = L.marker(initialHere, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).bindPopup('');
+    halo = L.circle(initialHere, { radius: acc, color: '#2563eb', weight: 1, fillOpacity: .1 });
+    trackingLayerGroup.addLayer(halo).addLayer(me);
+    me.setLatLng(initialHere).setPopupContent(`<b>📍 You are here</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}<br>UTM ${nav.utm}`);
+    
+    if (following) map.setView(initialHere, 17);
 
-    if (routeCoords) {
-      const off = distToRoute(here, routeCoords);
-      if (off > 40 && !offTrack) { offTrack = nav.off = true; renderSum(); setBoard(true); }
-      else if (off < 25 && offTrack) { offTrack = nav.off = false; renderSum(); }
-    }
+    // Initialize Leaflet Routing Machine starting from user's REAL live position
+    lastRouted = initialHere;
+    routing = L.Routing.control({
+      waypoints: [initialHere, L.latLng(target.lat, target.lng)],
+      routeWhileDragging: false, addWaypoints: false, draggableWaypoints: false,
+      lineOptions: { styles: [{ color: '#2563eb', weight: 6, opacity: .85 }] },
+      createMarker: (i, wp) => i === 0 ? null : L.marker(wp.latLng)
+    }).addTo(map);
 
-    if (!routing) {
-      lastRouted = here;
-      routing = L.Routing.control({
-        waypoints: [here, L.latLng(target.lat, target.lng)],
-        routeWhileDragging: false, addWaypoints: false, draggableWaypoints: false,
-        lineOptions: { styles: [{ color: '#2563eb', weight: 6, opacity: .85 }] },
-        createMarker: (i, wp) => i === 0 ? null : L.marker(wp.latLng)
-      }).addTo(map);
-      routing.on('routesfound', (e) => {
-        const r = e.routes[0];
-        Object.assign(nav, { dist: r.summary.totalDistance, time: r.summary.totalTime });
-        routeCoords = r.coordinates;
-        renderSum(); renderSteps(r);
-      });
-    } else if (lastRouted.distanceTo(here) > 15) {
-      lastRouted = here;
-      routing.spliceWaypoints(0, 1, here);
-      if (following) map.panTo(here);
-    }
+    routing.on('routesfound', (e) => {
+      const r = e.routes[0];
+      Object.assign(nav, { dist: r.summary.totalDistance, time: r.summary.totalTime });
+      routeCoords = r.coordinates;
+      renderSum(); renderSteps(r);
+    });
+
+    // Start continuous watchPosition to update live location in real time
+    watchId = navigator.geolocation.watchPosition((updatePos) => {
+      try {
+        const { latitude: lat, longitude: lng } = updatePos.coords;
+        const acc = Math.round(updatePos.coords.accuracy || 0);
+        const here = L.latLng(lat, lng);
+        const u = toUTM(lng, lat);
+        Object.assign(nav, { lat, lng, acc, utm: `${u[0].toFixed(1)} E, ${u[1].toFixed(1)} N` });
+
+        me.setLatLng(here).setPopupContent(`<b>📍 You are here</b><br>${lat.toFixed(6)}, ${lng.toFixed(6)}<br>UTM ${nav.utm}`);
+        halo.setLatLng(here).setRadius(acc);
+
+        if (following) map.panTo(here);
+
+        if (routeCoords) {
+          const off = distToRoute(here, routeCoords);
+          if (off > 40 && !offTrack) { offTrack = nav.off = true; renderSum(); setBoard(true); }
+          else if (off < 25 && offTrack) { offTrack = nav.off = false; renderSum(); }
+        }
+
+        if (lastRouted && lastRouted.distanceTo(here) > 15) {
+          lastRouted = here;
+          routing.spliceWaypoints(0, 1, here);
+          if (following) map.panTo(here);
+        }
+        renderLoc();
+        reverseGeocode(lat, lng);
+      } catch (err) {
+        console.error("Tracking watch error:", err);
+      }
+    }, (err) => {
+      console.warn("Watch position warning:", err.message);
+    }, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 });
+
     renderLoc();
     reverseGeocode(lat, lng);
-  };
 
-  const onFail = (err) => {
-    if (err.code === 1) { stopTracking(); alert("Location permission denied. Allow location for this site in your phone/browser settings (and open the link in Chrome/Safari, not inside WhatsApp)."); }
-    else { nav.place = '⚠️ Weak GPS signal, still trying… (turn ON phone location)'; renderLoc(); }
-  };
-
-  navigator.geolocation.getCurrentPosition(onFix, () => {}, { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 });
-  watchId = navigator.geolocation.watchPosition(onFix, onFail, { enableHighAccuracy: true, timeout: 30000, maximumAge: 0 });
+  }, (err) => {
+    stopTracking();
+    if (err.code === 1) {
+      alert("Location permission denied. Please allow location access for this site in your browser settings.");
+    } else {
+      alert("Could not get your GPS position. Make sure your device location / GPS is turned ON.");
+    }
+  }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 });
 }
-
+ 
 on('track-search-input', 'keydown', (e) => { if (e.key === 'Enter' || e.keyCode === 13) { e.preventDefault(); e.target.blur(); runTracker(); } });
 on('track-go-btn', 'click', runTracker);
 on('track-stop-btn', 'click', stopTracking);
-
-// ---------- 10. Initial Load ----------
+ 
+// ========== 10. START — load the data when the page opens ==========
 loadBuildingPermit();
