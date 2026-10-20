@@ -257,6 +257,18 @@ async function loadBuildingPermit() {
 }
 
 // ---------- 8. Table & map rendering ----------
+// Arrondissement Filter Function
+function applyArrondissementFilter() {
+  const selectedZone = document.getElementById('arrondissementFilter').value;
+  const filteredData = selectedZone === 'all' 
+    ? globalPermitData 
+    : globalPermitData.filter(r => {
+        const detected = detectArrondissement(r);
+        if (selectedZone === 'Default') return !detected;
+        return detected === selectedZone;
+      });
+  renderTableAndMap(filteredData);
+}
 function sortTableBy(col) {
   asc = sortCol === col ? !asc : true;
   sortCol = col;
