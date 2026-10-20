@@ -66,6 +66,7 @@
   #nav-chip { position: absolute; top: 88px; left: 10px; z-index: 1000; display: none; flex-direction: column; gap: 6px; }
   #nav-chip button { width: 34px; height: 34px; border-radius: 50%; background: #fff; box-shadow: 0 2px 8px rgba(0,0,0,.35); padding: 0; }
 
+  .filter-bar { background: #fff; padding: 10px 14px; border-radius: 8px; border: 1px solid #cbd5e1; display: flex; align-items: center; gap: 12px; }
   .table-container { overflow: auto; max-height: 400px; background: #fff; border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,.1); }
   table { width: 100%; border-collapse: collapse; text-align: left; }
   th, td { padding: 11px 13px; border-bottom: 1px solid #e2e8f0; font-size: 14px; }
@@ -144,17 +145,34 @@
     </div>
   </div>
 
+  <!-- Arrondissement Filter Bar -->
+  <div class="filter-bar">
+    <label for="arrondissementFilter" style="font-weight: 600; font-size: 13px; color: #1e293b; display: flex; align-items: center; gap: 8px;">
+      🔍 Filter Arrondissement:
+      <select id="arrondissementFilter" onchange="applyArrondissementFilter()" style="padding: 6px 12px; border-radius: 4px; border: 1px solid #cbd5e1; font-size: 13px; background: #f8fafc; color: #0f172a; cursor: pointer;">
+        <option value="all">All Arrondissements</option>
+        <option value="1">Yaoundé 1</option>
+        <option value="2">Yaoundé 2</option>
+        <option value="3">Yaoundé 3</option>
+        <option value="4">Yaoundé 4</option>
+        <option value="5">Yaoundé 5</option>
+        <option value="6">Yaoundé 6</option>
+        <option value="7">Yaoundé 7</option>
+        <option value="Default">Default / Unspecified</option>
+      </select>
+    </label>
+  </div>
+
   <div class="table-container">
     <table>
       <thead><tr>
         <th data-k="numero_permis" onclick="sortTableBy('numero_permis')">N° Permis <span class="si">↕</span></th>
-        <th data-k="name" onclick="sortTableBy('name')">Demandeur <span class="si">↕</span></th>
         <th data-k="proprietaire_nom" onclick="sortTableBy('proprietaire_nom')">Propriétaire <span class="si">↕</span></th>
         <th data-k="arrondissement" onclick="sortTableBy('arrondissement')">Arrondissement <span class="si">↕</span></th>
-        <th data-k="usage_bati" onclick="sortTableBy('usage_bati')">Usage Bâtiment <span class="si">↕</span></th>
+        <th style="cursor:default">Zoning Compliance</th>
         <th style="cursor:default">Actions</th>
       </tr></thead>
-      <tbody id="permit-table-body"><tr><td colspan="6" style="text-align:center">Chargement…</td></tr></tbody>
+      <tbody id="permit-table-body"><tr><td colspan="5" style="text-align:center">Chargement…</td></tr></tbody>
     </table>
   </div>
 </div>
