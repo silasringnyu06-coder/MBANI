@@ -368,7 +368,7 @@ document.querySelectorAll('#layer-mode button').forEach(b => b.onclick = () => s
 function popupHTML(title, color, r, comp, raw, idx) {
   const c = centroidUTM(raw);
   return `<div style="font-size:13px;"><strong style="color:${color};font-size:14px;">${title}</strong><br>
-    <strong>Permit:</strong> ${na(r.numero_permis)}<br><strong>Applicant:</strong> ${na(r.name)}<br>
+    <strong>Permit:</strong> ${na(r.numero_permis)}<br><strong>Applicant:</strong> ${na(r.proprietaire_nom)}<br>
     <strong>Zoning:</strong> ${comp.badgeHTML}<br><strong>Center UTM X:</strong> ${c.x} m E<br><strong>Center UTM Y:</strong> ${c.y} m N<br><br>
     <a href="#" onclick="showDetails(${idx}); return false;">View Details</a></div>`;
 }
@@ -437,7 +437,7 @@ function renderTableAndMap(data) {
     row.innerHTML = `
       <td><strong>${na(r.numero_permis)}</strong></td>
       <td>${na(r.proprietaire_nom || r.proprietaire)}</td>
-      <td>${na(r.arrondissement)}</td>
+      <td>${na(r.permit_arrondissement ||r.parcelle_arrondissement )}</td>
       <td>${comp.badgeHTML}</td>
       <td style="white-space:nowrap;">
         <button class="btn-details" onclick="event.stopPropagation(); togglePermitOnMap('${key}')">👁️ Show/Hide</button>
@@ -454,15 +454,18 @@ function renderTableAndMap(data) {
 // ---------- 9. Details modal ----------
 // Each section: [title, open by default?, [[label, field, unit?], ...]]
 const SECTIONS = [
-  ['🏠 1. Land Owner Information (Propriétaire)', true, [
+  ['🏠 1. Permit Holder Information (Propriétaire)', true, [
     ['Owner Name', 'proprietaire_nom'], ['Owner NUI', 'proprietaire_nui'], ['Owner Phone', 'proprietaire_telephone'],
     ['Owner Email', 'proprietaire_email'], ['Owner Address', 'proprietaire_adresse'], ['Owner Sex', 'proprietaire_sexe'],
     ['Owner CNI', 'proprietaire_cni'], ['Owner Nationality', 'proprietaire_nationalite']]],
+  ['🌍 1b. Land Owner of the Parcel (Terrain)', false, [
+    ['Land Owner Name', 'terrain_proprietaire_nom'], ['Land Owner NUI', 'terrain_proprietaire_nui'],
+    ['Land Owner Phone', 'terrain_proprietaire_telephone']]],
   ['👤 2. Applicant Information (Personne)', false, [
     ['Full Name', 'name'], ['NUI', 'nui'], ['Phone', 'telephone'], ['Email', 'email'],
     ['Address', 'adresse'], ['Sex', 'sexe'], ['CNI', 'cni']]],
   ['🗺️ 3. Parcel & Cadastre Details (Parcelle)', false, [
-    ['Plot No', 'plot_no'], ['Arrondissement', 'arrondissement'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
+    ['Plot No', 'plot_no'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
     ['Cadastral Area', 'cadastral_area'], ['Calculated Area', 'parcel_calculated_area', 'm²'],
     ['Land Title No', 'titre_foncier'], ['Parent Title No', 'num_tit_foncier_mere'], ['Lot No', 'num_lot'],
     ['Subdivision (Lotissement)', 'lotissement'], ['Easements (Servitudes)', 'servitudes'], ['Co-Owners', 'co_owners'],
@@ -475,7 +478,7 @@ const SECTIONS = [
     ['Min Parcel Area', 'superficie_parcelle_minimale_m2', 'm²'], ['Prohibited Activities', 'activites_interdites'],
     ['CU Status', 'statut_cu'], ['CU Issue Date', 'date_delivrance'], ['CU Expiry Date', 'date_expiration']]],
   ['🏢 5. Building Permit Details (Permis de Construire)', false, [
-    ['Permit No', 'numero_permis'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
+    ['Permit No', 'numero_permis'], ['Arrondissement', 'arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
     ['Commission Date', 'commission_date'], ['Nature Travaux', 'nature_travaux'], ['Nombre Planchers', 'nombre_planchers'],
     ['Etages Hors-Sol', 'etages_hors_sol'], ['Etages Sous-Sol', 'etages_sous_sol'], ['Building Use', 'usage_bati'],
     ['Parking Places', 'nombre_places_parkings'], ['Height', 'hauteur_construction', 'm'], ['Terrain Area', 'superficie_terrain', 'm²'],
@@ -546,7 +549,7 @@ on('search-input', 'input', (e) => {
 });
 
 // ---------- 11. Live GPS navigation ----------
-const navBoard = $('nav-board'), navChip =$('nav-chip'), nbq = (s) => navBoard.querySelector(s);
+const navBoard = $('nav-board'), navChip = $('nav-chip'), nbq = (s) => navBoard.querySelector(s);
 let routing = null, watchId = null, me = null, halo = null, stepMarker = null, route = null, routeCoords = null;
 let following = true, offTrack = false, boardHidden = false, lastRouted = null, lastGeo = null, nav = {};
 
@@ -555,13 +558,13 @@ if (innerWidth > 640) nbq('#nb-dir').open = true;
 
 function setBoard(visible) { boardHidden = !visible; navBoard.style.display = visible && nav.title ? 'block' : 'none'; }
 nbq('.nav-x').onclick = () => setBoard(false);
-$('chip-show').onclick = () => setBoard(boardHidden);$('chip-stop').onclick = () => stopTracking();
+$('chip-show').onclick = () => setBoard(boardHidden); $('chip-stop').onclick = () => stopTracking();
 map.on('dragstart', () => { following = false; renderLoc(); });   // user moved the map: stop auto-follow
 
 // Board: current location line
 function renderLoc() {
   nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating your live position…')}</div>
-    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} \vert{} UTM${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
+    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} | UTM ${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
   const rc = nbq('#recenter');
   if (rc) rc.onclick = (e) => { e.preventDefault(); following = true; me && map.panTo(me.getLatLng()); renderLoc(); };
 }
@@ -569,7 +572,7 @@ function renderLoc() {
 // Board: distance / time summary
 function renderSum() {
   const km = nav.dist >= 1000 ? (nav.dist / 1000).toFixed(1) + ' km' : Math.round(nav.dist || 0) + ' m';
-  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
+  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} · ${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
     <div class="sub">🎯 ${nav.title || ''}</div>
     ${nav.off ? '<div class="sub" style="color:#dc2626;font-weight:700">⚠️ Off route — recalculating…</div>' : ''}`;
 }
@@ -612,7 +615,8 @@ nbq('#nb-steps').addEventListener('click', (e) => {
 async function reverseGeocode(lat, lng) {
   if (lastGeo && L.latLng(lastGeo).distanceTo([lat, lng]) < 100) return;
   lastGeo = [lat, lng];
-  try { (await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`)).json();
+  try {
+    const j = await (await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`)).json();
     nav.place = (j.display_name || '').split(',').slice(0, 3).join(', ');
     renderLoc();
   } catch (e) {}
@@ -711,7 +715,7 @@ function runTracker() {
   if (!geojsonGroup.hasLayer(g)) { geojsonGroup.addLayer(g); applyMode(); }
 
   nav = {
-    title: `${record.numero_permis || ''} ${record.name ? '— ' + record.name : ''}`.trim() || 'Destination',
+    title: `${record.numero_permis || ''} ${record.proprietaire_nom ? '— ' + record.proprietaire_nom : ''}`.trim() || 'Destination',
     target: g.bnds.getCenter()
   };
   nbq('#nb-steps').innerHTML = '';
@@ -729,4 +733,3 @@ on('track-stop-btn', 'click', stopTracking);
 
 // ---------- 12. Start ----------
 loadBuildingPermit();
-  
