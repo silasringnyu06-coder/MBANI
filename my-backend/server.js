@@ -1,11 +1,13 @@
 const express = require('express');
 const cors = require('cors');
+const compression = require('compression'); // Compresses large GeoJSON payloads for performance
 require('dotenv').config();
 
 const db = require('./db');
 
 const app = express();
 
+app.use(compression());
 app.use(cors());
 app.use(express.json());
 
@@ -13,10 +15,10 @@ app.get('/', (req, res) => {
   res.json({ message: 'MBANI WebGIS API is running!' });
 });
 
-// Shared SQL Query Generator: full join across the 5 tables
+// FULLY ALIGNED VIEW QUERY: Handles separate permit holder (pr) and land owner (lo), with arrondissement in both tables
 const getBuildingPermitQuery = () => `
   SELECT
-      -- 1. PROPRIETAIRE (Land Owner)
+      -- Permit holder: pulled from 'proprietaire' via the permit's personne_id
       pr.proprietaire_id,
       pr.nom_complet AS proprietaire_nom,
       pr.nui AS proprietaire_nui,
@@ -27,7 +29,13 @@ const getBuildingPermitQuery = () => `
       pr.cni AS proprietaire_cni,
       pr.nationalite AS proprietaire_nationalite,
 
-      -- 2. PERSONNE (Applicant)
+      -- Land owner of the parcel: separate info columns
+      lo.proprietaire_id AS terrain_proprietaire_id,
+      lo.nom_complet AS terrain_proprietaire_nom,
+      lo.nui AS terrain_proprietaire_nui,
+      lo.telephone AS terrain_proprietaire_telephone,
+
+      -- Applicant Details (from 'personne')
       p.personne_id,
       p.nom_complet AS name,
       p.nui,
@@ -37,17 +45,17 @@ const getBuildingPermitQuery = () => `
       p.sexe,
       p.cni,
 
-      -- 3. PARCELLE
+      -- Parcelle Details (with parcel arrondissement)
       pa.parcelle_id,
       pa.plot_no,
-      pa.arrondissement,
+      pa.arrondissement AS parcel_arrondissement,
       pa.quartier,
       pa.lieu_dit,
       pa.cadastral_area,
       pa.titre_foncier,
       pa.lotissement,
       pa.servitudes,
-      pa.num_Tit_Foncier_Mère AS num_tit_foncier_mere,
+      pa.num_Tit_Foncier_Mère,
       pa.num_lot,
       pa.co_owners,
       pa.prop_cert_no,
@@ -55,14 +63,14 @@ const getBuildingPermitQuery = () => `
       ST_AsGeoJSON(ST_Transform(pa.geom, 4326))::json AS parcel_geom,
       pa.superficie_calculee AS parcel_calculated_area,
 
-      -- 4. CERTIFICAT D'URBANISME
+      -- Certificat d'Urbanisme Details
       cu.cu_id,
       cu.cu_number,
       cu.num_dossier AS cu_num_dossier,
       cu.date_demande,
       cu.qualite_demandeur,
       cu.operation_demandee,
-      cu.usage_du_Bati AS cu_usage_bati,
+      cu.usage_du_Bati,
       cu.code_zone,
       cu.nom_zone,
       cu.largeur_voie_minimale_m,
@@ -74,9 +82,10 @@ const getBuildingPermitQuery = () => `
       cu.date_expiration,
       cu.statut AS statut_cu,
 
-      -- 5. PERMIS DE CONSTRUIRE
+      -- Permis de Construire Details (with permit arrondissement)
       bp.permis_id,
       bp.numero_permis,
+      bp.arrondissement AS permit_arrondissement,
       bp.arrete_number,
       bp.commission_date,
       bp.nature_travaux,
@@ -102,10 +111,8 @@ const getBuildingPermitQuery = () => `
       ST_AsGeoJSON(ST_Transform(bp.geom, 4326))::json AS building_geom,
       bp.superficie_calculee AS building_calculated_area,
 
-      -- 6. GEOMETRIE COMBINEE (parcelle + batiment)
+      -- Spatial Geometries & Rules
       ST_AsGeoJSON(ST_Transform(ST_Collect(pa.geom, bp.geom), 4326))::json AS parcel_and_building_geom,
-
-      -- 7. VERIFICATIONS SPATIALES
       ST_Intersects(bp.geom, pa.geom) AS building_intersects_parcel,
       ST_Contains(pa.geom, bp.geom) AS building_fully_contained_in_parcel,
 
@@ -118,31 +125,35 @@ const getBuildingPermitQuery = () => `
   FROM permis_construire bp
   LEFT JOIN personne p ON bp.personne_id = p.personne_id
   LEFT JOIN parcelle pa ON bp.parcelle_id = pa.parcelle_id
-  LEFT JOIN proprietaire pr ON pa.proprietaire_id = pr.proprietaire_id
+  LEFT JOIN proprietaire pr ON bp.personne_id = pr.proprietaire_id
+  LEFT JOIN proprietaire lo ON pa.proprietaire_id = lo.proprietaire_id
   LEFT JOIN certificat_urbanisme cu ON bp.cu_id = cu.cu_id;
 `;
 
-// Smart Local / Cloud Fallback Database Endpoint with Detailed Error Reporting
+// Helper: Local-First Query Execution with Automatic Cloud Fallback
+async function queryWithLocalFirst(queryText, params = []) {
+  try {
+    const result = await db.localQuery(queryText, params);
+    return result;
+  } catch (localErr) {
+    console.warn('Local DB unavailable, falling back to Supabase Cloud:', localErr.message);
+    const cloudResult = await db.cloudQuery(queryText, params);
+    return cloudResult;
+  }
+}
+
+// Building Permit Endpoint (Local-First)
 app.get('/api/building-permit', async (req, res) => {
   try {
-    const result = await db.localQuery(getBuildingPermitQuery());
+    const result = await queryWithLocalFirst(getBuildingPermitQuery());
     res.status(200).json(result.rows);
-  } catch (localErr) {
-    try {
-      const cloudResult = await db.cloudQuery(getBuildingPermitQuery());
-      res.status(200).json(cloudResult.rows);
-    } catch (cloudErr) {
-      console.error('Both Local and Cloud Query Error:', localErr.message, cloudErr.message);
-      res.status(500).json({ 
-        error: 'Server error fetching building permit from both databases',
-        localError: localErr.message,
-        cloudError: cloudErr.message
-      });
-    }
+  } catch (err) {
+    console.error('Building Permit Query Error:', err.message);
+    res.status(500).json({ error: 'Server error fetching building permit data', details: err.message });
   }
 });
 
-// Cloud Database Endpoint
+// Explicit Cloud Database Endpoint
 app.get('/api/cloud-building-permit', async (req, res) => {
   try {
     const result = await db.cloudQuery(getBuildingPermitQuery());
@@ -153,7 +164,7 @@ app.get('/api/cloud-building-permit', async (req, res) => {
   }
 });
 
-// NEW: Mobile-Optimized Zoning BBox Endpoint for Leaflet (Using "Code" instead of "Zone")
+// Mobile-Optimized Zoning BBox Endpoint (Local-First)
 app.get('/api/zones/bbox', async (req, res) => {
   const { minLng, minLat, maxLng, maxLat } = req.query;
   
@@ -166,16 +177,16 @@ app.get('/api/zones/bbox', async (req, res) => {
         "CES" AS ces,
         "COS" AS cos,
         "Hauteur_m_" AS hauteur_max,
-        ST_AsGeoJSON(ST_Transform(geom, 4326)) AS geometry 
+        ST_AsGeoJSON(ST_Transform(geom, 4326))::json AS geometry 
       FROM urban_zones_mobile 
       WHERE geom && ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 32632);
     `;
     
-    const result = await db.cloudQuery(query, [minLng, minLat, maxLng, maxLat]);
+    const result = await queryWithLocalFirst(query, [minLng, minLat, maxLng, maxLat]);
     
     const features = result.rows.map(row => ({
       type: "Feature",
-      geometry: JSON.parse(row.geometry),
+      geometry: typeof row.geometry === 'string' ? JSON.parse(row.geometry) : row.geometry,
       properties: {
         id: row.id,
         zone_type: row.zone_type || 'Zone Urbaine',
@@ -197,16 +208,118 @@ app.get('/api/zones/bbox', async (req, res) => {
   }
 });
 
-// Sync & Insert Endpoint
+// Mobile-Optimized Quartiers BBox Endpoint (Local-First)
+app.get('/api/quartiers/bbox', async (req, res) => {
+  const { minLng, minLat, maxLng, maxLat } = req.query;
+  
+  try {
+    const query = `
+      SELECT 
+        id, 
+        name,
+        commune,
+        ST_AsGeoJSON(geom) AS geometry 
+      FROM quartier 
+      WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326);
+    `;
+    
+    const result = await queryWithLocalFirst(query, [minLng, minLat, maxLng, maxLat]);
+    
+    const features = result.rows.map(row => ({
+      type: "Feature",
+      geometry: typeof row.geometry === 'string' ? JSON.parse(row.geometry) : row.geometry,
+      properties: {
+        id: row.id,
+        name: row.name || 'Unknown Quartier',
+        commune: row.commune || 'N/A'
+      }
+    }));
+
+    res.json({
+      type: "FeatureCollection",
+      features: features
+    });
+    
+  } catch (err) {
+    console.error('Quartiers BBox Query Error:', err.message);
+    res.status(500).json({ error: 'Failed to fetch quartiers data', details: err.message });
+  }
+});
+
+// Spatial Lookup Endpoint for Parcel Zoning & Quartier Diagnosis (Local-First)
+app.get('/api/parcelle/spatial-info/:id', async (req, res) => {
+  const parcelId = req.params.id;
+
+  try {
+    const query = `
+      SELECT 
+        pa.parcelle_id,
+        pa.plot_no,
+        pa.titre_foncier,
+        q.name AS quartier_nom,
+        q.commune AS commune_nom,
+        z."Vocation_1" AS zone_type,
+        z."Code" AS zone_code,
+        z."CES" AS zone_ces,
+        z."COS" AS zone_cos,
+        z."Hauteur_m_" AS zone_hauteur_max
+      FROM parcelle pa
+      LEFT JOIN quartier q ON ST_Intersects(ST_Transform(pa.geom, 4326), q.geom)
+      LEFT JOIN urban_zones_mobile z ON ST_Intersects(pa.geom, z.geom)
+      WHERE pa.parcelle_id = $1
+      LIMIT 1;
+    `;
+
+    const result = await queryWithLocalFirst(query, [parcelId]);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Parcel not found or outside covered spatial data limits." });
+    }
+
+    const info = result.rows[0];
+    const vocation = (info.zone_type || '').toLowerCase();
+    let constructibilityStatus = "Constructible";
+    let statusColor = "#2ecc71"; // Green
+
+    if (vocation.includes('non constructible') || vocation.includes('pente') || vocation.includes('inondable') || vocation.includes('marécage') || vocation.includes('vert')) {
+      constructibilityStatus = "Non-Constructible (Zone Protégée/Risque)";
+      statusColor = "#e74c3c"; // Red
+    } else if (vocation.includes('sous condition') || vocation.includes('special')) {
+      constructibilityStatus = "Constructibilité Sous Condition";
+      statusColor = "#f39c12"; // Orange
+    }
+
+    res.json({
+      parcel_id: info.parcelle_id,
+      plot_no: info.plot_no,
+      titre_foncier: info.titre_foncier,
+      quartier: info.quartier_nom || 'N/A',
+      commune: info.commune_nom || 'N/A',
+      zone_code: info.zone_code || 'N/A',
+      zone_vocation: info.zone_type || 'Zone Urbaine',
+      ces_max: info.zone_ces || 'N/A',
+      cos_max: info.zone_cos || 'N/A',
+      hauteur_max: info.zone_hauteur_max || 'N/A',
+      constructibility_status: constructibilityStatus,
+      status_color: statusColor
+    });
+
+  } catch (err) {
+    console.error("Spatial Info Error:", err.message);
+    res.status(500).json({ error: "Failed to evaluate spatial overlap", details: err.message });
+  }
+});
+
+// Sync & Insert Endpoint (Automatically writes to Local and Mirrors to Supabase Cloud)
 app.post('/api/sync-building-permit', async (req, res) => {
-  const { numero_permis, personne_id, parcelle_id, usage_bati, status } = req.body;
+  const { numero_permis, personne_id, parcelle_id, usage_bati, status, arrondissement } = req.body;
   
   const queryText = `
-    INSERT INTO permis_construire (numero_permis, personne_id, parcelle_id, usage_bati, status)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO permis_construire (numero_permis, personne_id, parcelle_id, usage_bati, status, arrondissement)
+    VALUES ($1, $2, $3, $4, $5, $6)
     RETURNING *;
   `;
-  const values = [numero_permis, personne_id, parcelle_id, usage_bati, status];
+  const values = [numero_permis, personne_id, parcelle_id, usage_bati, status, arrondissement];
 
   try {
     const result = await db.syncQuery(queryText, values);
@@ -306,6 +419,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
           parcelle_id INTEGER REFERENCES parcelle(parcelle_id) ON DELETE CASCADE,
           cu_id INTEGER REFERENCES certificat_urbanisme(cu_id) ON DELETE SET NULL,
           numero_permis VARCHAR(60),
+          arrondissement VARCHAR(30),
           arrete_number VARCHAR(60),
           commission_date DATE,
           nature_travaux VARCHAR(40),
@@ -340,7 +454,7 @@ app.get('/api/setup-cloud-tables', async (req, res) => {
   }
 });
 
-// Migration Route: Sequentially copies all 5 tables to Supabase Cloud
+// Migration Route: Sequentially copies all 5 tables to Supabase Cloud with full success metrics
 app.get('/api/migrate-data', async (req, res) => {
   try {
     const localProp = await db.localQuery('SELECT * FROM proprietaire;');
@@ -396,9 +510,9 @@ app.get('/api/migrate-data', async (req, res) => {
     let permitCount = 0;
     for (let row of localPermits.rows) {
       await db.cloudQuery(
-        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrete_number, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_Bati, nombre_places_parkings, hauteur_construction, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28) ON CONFLICT (permis_id) DO NOTHING;`,
-        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrete_number, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_Bati, row.nombre_places_parkings, row.hauteur_construction, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
+        `INSERT INTO permis_construire (permis_id, personne_id, parcelle_id, cu_id, numero_permis, arrondissement, arrete_number, commission_date, nature_travaux, nombre_planchers, etages_hors_sol, etages_sous_sol, usage_Bati, nombre_places_parkings, hauteur_construction, building_cost, cout_total_projet, cos, ces, recul_voies_publiques, recul_limites_separatives, title_rec_no, architecte_responsable, architect_onac_no, status, input_database_date, issue_date, expiry_date, geom) 
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29) ON CONFLICT (permis_id) DO NOTHING;`,
+        [row.permis_id, row.personne_id, row.parcelle_id, row.cu_id, row.numero_permis, row.arrondissement, row.arrete_number, row.commission_date, row.nature_travaux, row.nombre_planchers, row.etages_hors_sol, row.etages_sous_sol, row.usage_Bati, row.nombre_places_parkings, row.hauteur_construction, row.building_cost, row.cout_total_projet, row.cos, row.ces, row.recul_voies_publiques, row.recul_limites_separatives, row.title_rec_no, row.architecte_responsable, row.architect_onac_no, row.status, row.input_database_date, row.issue_date, row.expiry_date, row.geom]
       );
       permitCount++;
     }
