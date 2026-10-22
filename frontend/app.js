@@ -169,7 +169,7 @@ baseLayers['Google Satellite'].addTo(map);
 // Small popup builder shared by the overlay layers
 const infoPopup = (header, rows) => `<div style="font-family:sans-serif;font-size:12px;">${header}${rows.map(([k, v]) => `<strong>${k}:</strong>${v}`).join('<br>')}</div>`;
 
-// POS zoning: colour by vocation
+// POS zoning: dynamic color-coding based on zone properties
 const ZONE_COLORS = [['habitat', '#2ecc71'], ['commercial', '#e74c3c'], ['industriel', '#9b59b6'], ['vert', '#27ae60']];
 const zoningLayer = L.geoJSON(null, {
   style: (f) => {
@@ -437,7 +437,7 @@ function renderTableAndMap(data) {
     row.innerHTML = `
       <td><strong>${na(r.numero_permis)}</strong></td>
       <td>${na(r.proprietaire_nom || r.proprietaire)}</td>
-      <td>${na(r.arrondissement)}</td>
+      <td>${na(r.permit_arrondissement || r.parcel_arrondissement)}</td>
       <td>${comp.badgeHTML}</td>
       <td style="white-space:nowrap;">
         <button class="btn-details" onclick="event.stopPropagation(); togglePermitOnMap('${key}')">👁️ Show/Hide</button>
@@ -454,15 +454,18 @@ function renderTableAndMap(data) {
 // ---------- 9. Details modal ----------
 // Each section: [title, open by default?, [[label, field, unit?], ...]]
 const SECTIONS = [
-  ['🏠 1. Land Owner Information (Propriétaire)', true, [
+  ['🏠 1. Permit Holder Information (Propriétaire)', true, [
     ['Owner Name', 'proprietaire_nom'], ['Owner NUI', 'proprietaire_nui'], ['Owner Phone', 'proprietaire_telephone'],
     ['Owner Email', 'proprietaire_email'], ['Owner Address', 'proprietaire_adresse'], ['Owner Sex', 'proprietaire_sexe'],
     ['Owner CNI', 'proprietaire_cni'], ['Owner Nationality', 'proprietaire_nationalite']]],
+  ['🌍 1b. Land Owner of the Parcel (Terrain)', false, [
+    ['Land Owner Name', 'terrain_proprietaire_nom'], ['Land Owner NUI', 'terrain_proprietaire_nui'],
+    ['Land Owner Phone', 'terrain_proprietaire_telephone']]],
   ['👤 2. Applicant Information (Personne)', false, [
     ['Full Name', 'name'], ['NUI', 'nui'], ['Phone', 'telephone'], ['Email', 'email'],
     ['Address', 'adresse'], ['Sex', 'sexe'], ['CNI', 'cni']]],
   ['🗺️ 3. Parcel & Cadastre Details (Parcelle)', false, [
-    ['Plot No', 'plot_no'], ['Arrondissement', 'arrondissement'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
+    ['Plot No', 'plot_no'], ['Arrondissement', 'parcel_arrondissement'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
     ['Cadastral Area', 'cadastral_area'], ['Calculated Area', 'parcel_calculated_area', 'm²'],
     ['Land Title No', 'titre_foncier'], ['Parent Title No', 'num_tit_foncier_mere'], ['Lot No', 'num_lot'],
     ['Subdivision (Lotissement)', 'lotissement'], ['Easements (Servitudes)', 'servitudes'], ['Co-Owners', 'co_owners'],
@@ -475,7 +478,7 @@ const SECTIONS = [
     ['Min Parcel Area', 'superficie_parcelle_minimale_m2', 'm²'], ['Prohibited Activities', 'activites_interdites'],
     ['CU Status', 'statut_cu'], ['CU Issue Date', 'date_delivrance'], ['CU Expiry Date', 'date_expiration']]],
   ['🏢 5. Building Permit Details (Permis de Construire)', false, [
-    ['Permit No', 'numero_permis'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
+    ['Permit No', 'numero_permis'], ['Arrondissement', 'permit_arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
     ['Commission Date', 'commission_date'], ['Nature Travaux', 'nature_travaux'], ['Nombre Planchers', 'nombre_planchers'],
     ['Etages Hors-Sol', 'etages_hors_sol'], ['Etages Sous-Sol', 'etages_sous_sol'], ['Building Use', 'usage_bati'],
     ['Parking Places', 'nombre_places_parkings'], ['Height', 'hauteur_construction', 'm'], ['Terrain Area', 'superficie_terrain', 'm²'],
@@ -612,7 +615,8 @@ nbq('#nb-steps').addEventListener('click', (e) => {
 async function reverseGeocode(lat, lng) {
   if (lastGeo && L.latLng(lastGeo).distanceTo([lat, lng]) < 100) return;
   lastGeo = [lat, lng];
-  try { (await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`)).json();
+  try {
+    const j = await (await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=18&lat=${lat}&lon=${lng}`)).json();
     nav.place = (j.display_name || '').split(',').slice(0, 3).join(', ');
     renderLoc();
   } catch (e) {}
@@ -711,7 +715,7 @@ function runTracker() {
   if (!geojsonGroup.hasLayer(g)) { geojsonGroup.addLayer(g); applyMode(); }
 
   nav = {
-    title: `${record.numero_permis || ''} ${record.name ? '— ' + record.name : ''}`.trim() || 'Destination',
+    title: `${record.numero_permis || ''} ${record.proprietaire_nom ? '— ' + record.proprietaire_nom : ''}`.trim() || 'Destination',
     target: g.bnds.getCenter()
   };
   nbq('#nb-steps').innerHTML = '';
@@ -729,4 +733,3 @@ on('track-stop-btn', 'click', stopTracking);
 
 // ---------- 12. Start ----------
 loadBuildingPermit();
-  
