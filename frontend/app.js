@@ -169,7 +169,7 @@ baseLayers['Google Satellite'].addTo(map);
 // Small popup builder shared by the overlay layers
 const infoPopup = (header, rows) => `<div style="font-family:sans-serif;font-size:12px;">${header}${rows.map(([k, v]) => `<strong>${k}:</strong>${v}`).join('<br>')}</div>`;
 
-// POS zoning: colour by vocation
+// POS zoning: dynamic color-coding based on zone properties
 const ZONE_COLORS = [['habitat', '#2ecc71'], ['commercial', '#e74c3c'], ['industriel', '#9b59b6'], ['vert', '#27ae60']];
 const zoningLayer = L.geoJSON(null, {
   style: (f) => {
@@ -368,7 +368,7 @@ document.querySelectorAll('#layer-mode button').forEach(b => b.onclick = () => s
 function popupHTML(title, color, r, comp, raw, idx) {
   const c = centroidUTM(raw);
   return `<div style="font-size:13px;"><strong style="color:${color};font-size:14px;">${title}</strong><br>
-    <strong>Permit:</strong> ${na(r.numero_permis)}<br><strong>Applicant:</strong> ${na(r.proprietaire_nom)}<br>
+    <strong>Permit:</strong> ${na(r.numero_permis)}<br><strong>Applicant:</strong> ${na(r.name)}<br>
     <strong>Zoning:</strong> ${comp.badgeHTML}<br><strong>Center UTM X:</strong> ${c.x} m E<br><strong>Center UTM Y:</strong> ${c.y} m N<br><br>
     <a href="#" onclick="showDetails(${idx}); return false;">View Details</a></div>`;
 }
@@ -436,8 +436,9 @@ function renderTableAndMap(data) {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td><strong>${na(r.numero_permis)}</strong></td>
+      <td>${na(r.name)}</td>
       <td>${na(r.proprietaire_nom || r.proprietaire)}</td>
-      <td>${na(r.permit_arrondissement ||r.parcelle_arrondissement )}</td>
+      <td>${na(r.permit_arrondissement || r.parcel_arrondissement)}</td>
       <td>${comp.badgeHTML}</td>
       <td style="white-space:nowrap;">
         <button class="btn-details" onclick="event.stopPropagation(); togglePermitOnMap('${key}')">👁️ Show/Hide</button>
@@ -465,7 +466,7 @@ const SECTIONS = [
     ['Full Name', 'name'], ['NUI', 'nui'], ['Phone', 'telephone'], ['Email', 'email'],
     ['Address', 'adresse'], ['Sex', 'sexe'], ['CNI', 'cni']]],
   ['🗺️ 3. Parcel & Cadastre Details (Parcelle)', false, [
-    ['Plot No', 'plot_no'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
+    ['Plot No', 'plot_no'], ['Arrondissement', 'parcel_arrondissement'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
     ['Cadastral Area', 'cadastral_area'], ['Calculated Area', 'parcel_calculated_area', 'm²'],
     ['Land Title No', 'titre_foncier'], ['Parent Title No', 'num_tit_foncier_mere'], ['Lot No', 'num_lot'],
     ['Subdivision (Lotissement)', 'lotissement'], ['Easements (Servitudes)', 'servitudes'], ['Co-Owners', 'co_owners'],
@@ -478,7 +479,7 @@ const SECTIONS = [
     ['Min Parcel Area', 'superficie_parcelle_minimale_m2', 'm²'], ['Prohibited Activities', 'activites_interdites'],
     ['CU Status', 'statut_cu'], ['CU Issue Date', 'date_delivrance'], ['CU Expiry Date', 'date_expiration']]],
   ['🏢 5. Building Permit Details (Permis de Construire)', false, [
-    ['Permit No', 'numero_permis'], ['Arrondissement', 'arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
+    ['Permit No', 'numero_permis'], ['Arrondissement', 'permit_arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
     ['Commission Date', 'commission_date'], ['Nature Travaux', 'nature_travaux'], ['Nombre Planchers', 'nombre_planchers'],
     ['Etages Hors-Sol', 'etages_hors_sol'], ['Etages Sous-Sol', 'etages_sous_sol'], ['Building Use', 'usage_bati'],
     ['Parking Places', 'nombre_places_parkings'], ['Height', 'hauteur_construction', 'm'], ['Terrain Area', 'superficie_terrain', 'm²'],
@@ -549,7 +550,7 @@ on('search-input', 'input', (e) => {
 });
 
 // ---------- 11. Live GPS navigation ----------
-const navBoard = $('nav-board'), navChip = $('nav-chip'), nbq = (s) => navBoard.querySelector(s);
+const navBoard = $('nav-board'), navChip =$('nav-chip'), nbq = (s) => navBoard.querySelector(s);
 let routing = null, watchId = null, me = null, halo = null, stepMarker = null, route = null, routeCoords = null;
 let following = true, offTrack = false, boardHidden = false, lastRouted = null, lastGeo = null, nav = {};
 
@@ -558,13 +559,13 @@ if (innerWidth > 640) nbq('#nb-dir').open = true;
 
 function setBoard(visible) { boardHidden = !visible; navBoard.style.display = visible && nav.title ? 'block' : 'none'; }
 nbq('.nav-x').onclick = () => setBoard(false);
-$('chip-show').onclick = () => setBoard(boardHidden); $('chip-stop').onclick = () => stopTracking();
+$('chip-show').onclick = () => setBoard(boardHidden);$('chip-stop').onclick = () => stopTracking();
 map.on('dragstart', () => { following = false; renderLoc(); });   // user moved the map: stop auto-follow
 
 // Board: current location line
 function renderLoc() {
   nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating your live position…')}</div>
-    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} | UTM ${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
+    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} \vert{} UTM${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
   const rc = nbq('#recenter');
   if (rc) rc.onclick = (e) => { e.preventDefault(); following = true; me && map.panTo(me.getLatLng()); renderLoc(); };
 }
@@ -572,7 +573,7 @@ function renderLoc() {
 // Board: distance / time summary
 function renderSum() {
   const km = nav.dist >= 1000 ? (nav.dist / 1000).toFixed(1) + ' km' : Math.round(nav.dist || 0) + ' m';
-  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} · ${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
+  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
     <div class="sub">🎯 ${nav.title || ''}</div>
     ${nav.off ? '<div class="sub" style="color:#dc2626;font-weight:700">⚠️ Off route — recalculating…</div>' : ''}`;
 }
