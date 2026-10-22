@@ -436,7 +436,6 @@ function renderTableAndMap(data) {
     const row = document.createElement('tr');
     row.innerHTML = `
       <td><strong>${na(r.numero_permis)}</strong></td>
-      <td>${na(r.name)}</td>
       <td>${na(r.proprietaire_nom || r.proprietaire)}</td>
       <td>${na(r.permit_arrondissement || r.parcel_arrondissement)}</td>
       <td>${comp.badgeHTML}</td>
