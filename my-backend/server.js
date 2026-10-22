@@ -130,19 +130,18 @@ const getBuildingPermitQuery = () => `
   LEFT JOIN certificat_urbanisme cu ON bp.cu_id = cu.cu_id;
 `;
 
-// Helper: Local-First Query Execution with Automatic Cloud Fallback
+// Helper: Direct Cloud Query Execution (Prevents local failure warning loops)
 async function queryWithLocalFirst(queryText, params = []) {
   try {
-    const result = await db.localQuery(queryText, params);
-    return result;
-  } catch (localErr) {
-    console.warn('Local DB unavailable, falling back to Supabase Cloud:', localErr.message);
     const cloudResult = await db.cloudQuery(queryText, params);
     return cloudResult;
+  } catch (err) {
+    console.error('Cloud Query Error:', err.message);
+    throw err;
   }
 }
 
-// Building Permit Endpoint (Local-First)
+// Building Permit Endpoint
 app.get('/api/building-permit', async (req, res) => {
   try {
     const result = await queryWithLocalFirst(getBuildingPermitQuery());
@@ -164,7 +163,7 @@ app.get('/api/cloud-building-permit', async (req, res) => {
   }
 });
 
-// Mobile-Optimized Zoning BBox Endpoint (Local-First)
+// Combined POS & PDUY Zoning BBox Endpoint
 app.get('/api/zones/bbox', async (req, res) => {
   const { minLng, minLat, maxLng, maxLat } = req.query;
   
@@ -178,7 +177,20 @@ app.get('/api/zones/bbox', async (req, res) => {
         "COS" AS cos,
         "Hauteur_m_" AS hauteur_max,
         ST_AsGeoJSON(ST_Transform(geom, 4326))::json AS geometry 
-      FROM urban_zones_mobile 
+      FROM "Zonage_pos"
+      WHERE geom && ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 32632)
+      
+      UNION ALL
+      
+      SELECT 
+        id, 
+        "Vocation_1" AS zone_type, 
+        "Code" AS zone_name,
+        "CES" AS ces,
+        "COS" AS cos,
+        "Hauteur_m_" AS hauteur_max,
+        ST_AsGeoJSON(ST_Transform(geom, 4326))::json AS geometry 
+      FROM "Zonage_pduy"
       WHERE geom && ST_Transform(ST_MakeEnvelope($1, $2, $3, $4, 4326), 32632);
     `;
     
@@ -204,11 +216,11 @@ app.get('/api/zones/bbox', async (req, res) => {
     
   } catch (err) {
     console.error('Zoning BBox Query Error:', err.message);
-    res.status(500).json({ error: 'Failed to fetch mobile zoning data', details: err.message });
+    res.status(500).json({ error: 'Failed to fetch unified zoning data', details: err.message });
   }
 });
 
-// Mobile-Optimized Quartiers BBox Endpoint (Local-First)
+// Mobile-Optimized Quartiers BBox Endpoint
 app.get('/api/quartiers/bbox', async (req, res) => {
   const { minLng, minLat, maxLng, maxLat } = req.query;
   
@@ -219,7 +231,7 @@ app.get('/api/quartiers/bbox', async (req, res) => {
         name,
         commune,
         ST_AsGeoJSON(geom) AS geometry 
-      FROM quartier 
+      FROM "quartier" 
       WHERE geom && ST_MakeEnvelope($1, $2, $3, $4, 4326);
     `;
     
@@ -246,7 +258,7 @@ app.get('/api/quartiers/bbox', async (req, res) => {
   }
 });
 
-// Spatial Lookup Endpoint for Parcel Zoning & Quartier Diagnosis (Local-First)
+// Spatial Lookup Endpoint for Parcel Zoning & Quartier Diagnosis
 app.get('/api/parcelle/spatial-info/:id', async (req, res) => {
   const parcelId = req.params.id;
 
@@ -258,14 +270,15 @@ app.get('/api/parcelle/spatial-info/:id', async (req, res) => {
         pa.titre_foncier,
         q.name AS quartier_nom,
         q.commune AS commune_nom,
-        z."Vocation_1" AS zone_type,
-        z."Code" AS zone_code,
-        z."CES" AS zone_ces,
-        z."COS" AS zone_cos,
-        z."Hauteur_m_" AS zone_hauteur_max
+        COALESCE(z_pos."Vocation_1", z_pdu."Vocation_1") AS zone_type,
+        COALESCE(z_pos."Code", z_pdu."Code") AS zone_code,
+        COALESCE(z_pos."CES", z_pdu."CES") AS zone_ces,
+        COALESCE(z_pos."COS", z_pdu."COS") AS zone_cos,
+        COALESCE(z_pos."Hauteur_m_", z_pdu."Hauteur_m_") AS zone_hauteur_max
       FROM parcelle pa
-      LEFT JOIN quartier q ON ST_Intersects(ST_Transform(pa.geom, 4326), q.geom)
-      LEFT JOIN urban_zones_mobile z ON ST_Intersects(pa.geom, z.geom)
+      LEFT JOIN "quartier" q ON ST_Intersects(ST_Transform(pa.geom, 4326), q.geom)
+      LEFT JOIN "Zonage_pos" z_pos ON ST_Intersects(pa.geom, z_pos.geom)
+      LEFT JOIN "Zonage_pduy" z_pdu ON ST_Intersects(pa.geom, z_pdu.geom)
       WHERE pa.parcelle_id = $1
       LIMIT 1;
     `;
@@ -310,7 +323,7 @@ app.get('/api/parcelle/spatial-info/:id', async (req, res) => {
   }
 });
 
-// Sync & Insert Endpoint (Automatically writes to Local and Mirrors to Supabase Cloud)
+// Sync & Insert Endpoint
 app.post('/api/sync-building-permit', async (req, res) => {
   const { numero_permis, personne_id, parcelle_id, usage_bati, status, arrondissement } = req.body;
   
@@ -322,15 +335,14 @@ app.post('/api/sync-building-permit', async (req, res) => {
   const values = [numero_permis, personne_id, parcelle_id, usage_bati, status, arrondissement];
 
   try {
-    const result = await db.syncQuery(queryText, values);
+    const result = await db.cloudQuery(queryText, values);
     res.status(201).json({
-      message: 'Successfully synced and inserted to both Local and Supabase Cloud databases!',
-      local: result.local.rows[0],
-      cloud: result.cloud.rows[0]
+      message: 'Successfully inserted to Supabase Cloud database!',
+      cloud: result.rows[0]
     });
   } catch (err) {
-    console.error('Database Sync Insertion Error:', err);
-    res.status(500).json({ error: 'Failed to sync and insert record across databases', details: err.message });
+    console.error('Database Insertion Error:', err);
+    res.status(500).json({ error: 'Failed to insert record', details: err.message });
   }
 });
 
