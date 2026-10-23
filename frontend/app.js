@@ -44,22 +44,74 @@ const zoneRules = (k) => {
   return { maxCES, maxCOS, maxFloors, maxHeightM };
 };
 
-// FIX 1: Finds the arrondissement number strictly from location fields, ignoring permit numbers
+// Spatial arrondissement from the map (one request per parcel, cached and shared with the parcel popup)
+const spatialCache = {};
+function getSpatialInfo(parcelId) {
+  if (!parcelId) return Promise.resolve(null);
+  if (!(parcelId in spatialCache)) {
+    spatialCache[parcelId] = fetch(`${API_BASE}/api/parcelle/spatial-info/${parcelId}`)
+      .then(res => (res.ok ? res.json() : null))
+      .catch(() => null);
+  }
+  return spatialCache[parcelId];
+}
+
+// Reads a POS limit such as "20%", "0,1", "3 à 3,6", "20 à 28", "Non constructible", 0.
+// A range gives its upper bound. Returns null when the POS gives no usable number.
+function parsePOSLimit(v, isRatio) {
+  if (v === undefined || v === null || v === '') return null;
+  const s = String(v);
+  if (/non\s*-?\s*constructible/i.test(s)) return 0;
+  const nums = (s.replace(/,/g, '.').match(/\d+(\.\d+)?/g) || []).map(Number);
+  if (!nums.length) return null;
+  let n = Math.max(...nums);
+  if (isRatio && (s.includes('%') || n > 1)) n = n / 100;   // CES 20% -> 0.20
+  return n;
+}
+
+// Adds the map arrondissement and the official POS rules of the parcel's zone to every record
+async function enrichWithSpatialArrondissement(data) {
+  await Promise.all(data.map(async (r) => {
+    const d = await getSpatialInfo(r.parcelle_id);
+    if (!d) return;
+    if (d.commune) {
+      r.map_commune = d.commune;     // e.g. "Yaounde 2"
+      r.map_quartier = d.quartier;   // e.g. "Ntoungou"
+    }
+    if (d.zone_code) {
+      const status = String(d.constructibility_status || '');
+      r.pos = {
+        code: d.zone_code,
+        vocation: d.zone_vocation,
+        status,
+        constructible: !/non/i.test(status),
+        maxCES: parsePOSLimit(d.ces_max, true),
+        maxCOS: parsePOSLimit(d.cos_max, false),
+        maxHeightM: parsePOSLimit(d.hauteur_max, false),
+        raw: { ces: d.ces_max, cos: d.cos_max, h: d.hauteur_max }
+      };
+      r.pos_zone = `${d.zone_code} - ${d.zone_vocation || ''}`;
+      r.pos_limits = `CES: ${na(d.ces_max)} | COS: ${na(d.cos_max)} | H: ${na(d.hauteur_max)}m`;
+    }
+  }));
+}
+
 const ROMAN = { i: 1, ii: 2, iii: 3, iv: 4, v: 5, vi: 6, vii: 7 };
 
+// Arrondissement number: the map (spatial) result first, typed fields only as fallback
 function detectArrondissement(r) {
-  for (const f of [r.arrondissement, r.parcel_arrondissement, r.quartier, r.nom_zone, r.code_zone]) {
+  for (const f of [r.map_commune, r.permit_arrondissement, r.parcel_arrondissement, r.arrondissement]) {
     if (f === undefined || f === null || f === '') continue;
     const s = String(f);
-    
+
     // 1. Matches "YDE 1", "YDE1", "YDE-1", "Yaoundé 1", or "Yaounde-1"
     const prefixMatch = s.match(/(?:yaound[eé]|yde)[\s-]*([1-7])/i);
     if (prefixMatch) return prefixMatch[1];
-    
+
     // 2. Matches standalone digits 1 to 7
     const digitMatch = s.match(/\b[1-7]\b/);
     if (digitMatch) return digitMatch[0];
-    
+
     // 3. Matches Roman Numerals (e.g., III, II, I)
     const romanMatch = s.match(/\b(vii|vi|iv|v|iii|ii|i)\b/i);
     if (romanMatch) return String(ROMAN[romanMatch[1].toLowerCase()]);
@@ -69,14 +121,25 @@ function detectArrondissement(r) {
 
 function checkZoningCompliance(r) {
   const n = detectArrondissement(r);
-  const zone = n ? `Yaoundé ${n}` : 'Default', rules = zoneRules(n);
+  const arrLabel = n ? `Yaoundé ${n}` : 'Default';
+  const fallback = zoneRules(n), pos = r.pos;
+
+  // Official POS limits of the parcel's zone first; arrondissement table only where the POS gives no number.
+  // The POS sets no floor count, so floors are only checked with the fallback table.
+  const rules = pos ? {
+    maxCES: pos.maxCES ?? fallback.maxCES,
+    maxCOS: pos.maxCOS ?? fallback.maxCOS,
+    maxHeightM: pos.maxHeightM ?? fallback.maxHeightM,
+    maxFloors: Infinity
+  } : fallback;
+  const zone = pos ? `POS ${pos.code} · ${arrLabel}` : arrLabel;
   const area = parseFloat(r.cadastral_area || r.parcel_calculated_area || 0);
   const built = parseFloat(r.building_calculated_area || 0);
 
   const flRaw = String(r.etages_hors_sol || r.nombre_planchers || '1');
   const floors = parseInt((flRaw.match(/\d+/) || ['1'])[0], 10) + (/^\s*(g|r|rdc)\s*\+/i.test(flRaw) ? 1 : 0);
   const height = parseFloat(r.hauteur_construction || 0);
-  
+
   // Use database CES if explicitly provided, otherwise compute from geometry
   const dbCES = parseFloat(r.ces || 0);
   const computedCES = area > 0 && built > 0 ? built / area : 0;
@@ -84,13 +147,17 @@ function checkZoningCompliance(r) {
 
   const cos = area > 0 && built > 0 ? (built * floors) / area : parseFloat(r.cos || 0);
 
-  const issues = [];
-  if (height > rules.maxHeightM) issues.push(`Height ${height}m exceeds max ${rules.maxHeightM}m`);
-  if (floors > rules.maxFloors) issues.push(`${floors} floors exceed max ${rules.maxFloors}`);
-  
-  // Use a small tolerance (0.001) to prevent floating-point precision bugs (e.g. 0.7000000000000001 > 0.70)
-  if (ces - rules.maxCES > 0.001) issues.push(`CES ${(ces * 100).toFixed(1)}% exceeds max ${rules.maxCES * 100}%`);
-  if (cos - rules.maxCOS > 0.001) issues.push(`COS ${cos.toFixed(2)} exceeds max ${rules.maxCOS}`);
+  const issues = [], src = pos ? 'POS' : 'zone';
+  if (pos && !pos.constructible) {
+    // Any building on a non-constructible POS zone is non-compliant, whatever its size
+    issues.push(`Parcel lies in a non-constructible POS zone: ${pos.code} - ${pos.vocation || ''} (${pos.status})`);
+  } else {
+    if (height > rules.maxHeightM) issues.push(`Height ${height}m exceeds ${src} max ${rules.maxHeightM}m`);
+    if (floors > rules.maxFloors) issues.push(`${floors} floors exceed max ${rules.maxFloors}`);
+    // Small tolerance (0.001) to avoid floating-point false alarms (e.g. 0.7000000000000001 > 0.70)
+    if (ces - rules.maxCES > 0.001) issues.push(`CES ${(ces * 100).toFixed(1)}% exceeds ${src} max ${+(rules.maxCES * 100).toFixed(1)}%`);
+    if (cos - rules.maxCOS > 0.001) issues.push(`COS ${cos.toFixed(2)} exceeds ${src} max ${rules.maxCOS}`);
+  }
   if (r.setback_ok === false) issues.push(`Front setback (${r.recul_voies_publiques || 0}m) violates urban certificate minimum (${r.retrait_minimal_m}m)`);
   const ok = !issues.length;
   return {
@@ -101,6 +168,17 @@ function checkZoningCompliance(r) {
 function displayZoneInfo(zone) {
   const r = zoneRules(String(zone).replace(/\D/g, ''));
   setHTML('zone-info-display', `Max Height: <strong>${r.maxHeightM}m</strong> | Max Floors: <strong>${r.maxFloors}</strong> | Max CES: <strong>${r.maxCES * 100}%</strong> | Max COS: <strong>${r.maxCOS}</strong>`);
+}
+
+// Table cell: arrondissement from the map, with a warning if the typed value disagrees
+function arrCell(r) {
+  const declared = r.permit_arrondissement || r.parcel_arrondissement;
+  if (!r.map_commune) return na(declared);
+  const mapN = detectArrondissement({ map_commune: r.map_commune });
+  const declN = declared ? detectArrondissement({ arrondissement: declared }) : null;
+  const warn = declN && declN !== mapN
+    ? `<br><span title="Value typed in the database" style="color:#e67e22;font-size:11px;">⚠️ declared ${declared}</span>` : '';
+  return `${r.map_commune}${warn}`;
 }
 
 // ---------- 4. Geometry helpers ----------
@@ -245,6 +323,8 @@ async function loadBuildingPermit() {
     const res = await fetch(`${API_BASE}/api/building-permit`, { signal: ctrl.signal });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     globalPermitData = await res.json();
+    setDataStatus('🗺️ Matching each parcel to its arrondissement on the map…');
+    await enrichWithSpatialArrondissement(globalPermitData);
     renderTableAndMap(globalPermitData);
     setDataStatus(`✅ ${globalPermitData.length} record(s) loaded.`, 'ok');
     setTimeout(() => setDataStatus(''), 4000);
@@ -257,11 +337,11 @@ async function loadBuildingPermit() {
 }
 
 // ---------- 8. Table & map rendering ----------
-// Arrondissement Filter Function
+// Arrondissement Filter Function (uses the map arrondissement through detectArrondissement)
 function applyArrondissementFilter() {
   const selectedZone = document.getElementById('arrondissementFilter').value;
-  const filteredData = selectedZone === 'all' 
-    ? globalPermitData 
+  const filteredData = selectedZone === 'all'
+    ? globalPermitData
     : globalPermitData.filter(r => {
         const detected = detectArrondissement(r);
         if (selectedZone === 'Default') return !detected;
@@ -277,8 +357,10 @@ function sortTableBy(col) {
     th.classList.toggle('sorted', isSorted);
     if (si) si.textContent = isSorted ? (asc ? '▲' : '▼') : '↕';
   });
+  // Sorting the arrondissement column uses the map value when available
+  const val = (r) => (/arrondissement/.test(col) ? (r.map_commune || r[col]) : r[col]);
   globalPermitData.sort((a, b) => {
-    let x = (a[col] || '').toString().toLowerCase(), y = (b[col] || '').toString().toLowerCase();
+    let x = (val(a) || '').toString().toLowerCase(), y = (val(b) || '').toString().toLowerCase();
     if (x !== '' && y !== '' && !isNaN(x) && !isNaN(y)) { x = +x; y = +y; }
     return x < y ? (asc ? -1 : 1) : x > y ? (asc ? 1 : -1) : 0;
   });
@@ -373,12 +455,11 @@ function popupHTML(title, color, r, comp, raw, idx) {
     <a href="#" onclick="showDetails(${idx}); return false;">View Details</a></div>`;
 }
 
-// Parcel popup: land & urban-planning diagnostic from the server
+// Parcel popup: land & urban-planning diagnostic from the server (reuses the cache)
 async function fetchAndShowParcelDiagnostic(parcelId, layer, idx) {
   try {
-    const res = await fetch(`${API_BASE}/api/parcelle/spatial-info/${parcelId}`);
-    if (!res.ok) throw new Error('Failed to fetch spatial info');
-    const d = await res.json();
+    const d = await getSpatialInfo(parcelId);
+    if (!d) throw new Error('Failed to fetch spatial info');
     layer.bindPopup(`
       <div style="font-family:sans-serif;font-size:12px;width:240px;">
         <strong style="color:#0284c7;font-size:14px;">📍 Diagnostic Foncier & Urbanisme</strong><br><br>
@@ -401,7 +482,9 @@ function renderTableAndMap(data) {
 
   if (!data || !data.length) { tableMessage('No records found.'); return updateShowAllButton(); }
 
-  data.forEach((r, idx) => {
+  data.forEach((r) => {
+    // Index in globalPermitData, so "View Details" opens the right record even after filtering
+    const idx = globalPermitData.indexOf(r);
     let key = String(r.permis_id || r.numero_permis || idx);
     if (layersMap[key]) key += '#' + idx;
     r.__key = key;
@@ -437,7 +520,7 @@ function renderTableAndMap(data) {
     row.innerHTML = `
       <td><strong>${na(r.numero_permis)}</strong></td>
       <td>${na(r.proprietaire_nom || r.proprietaire)}</td>
-      <td>${na(r.permit_arrondissement || r.parcel_arrondissement)}</td>
+      <td>${arrCell(r)}</td>
       <td>${comp.badgeHTML}</td>
       <td style="white-space:nowrap;">
         <button class="btn-details" onclick="event.stopPropagation(); togglePermitOnMap('${key}')">👁️ Show/Hide</button>
@@ -465,7 +548,8 @@ const SECTIONS = [
     ['Full Name', 'name'], ['NUI', 'nui'], ['Phone', 'telephone'], ['Email', 'email'],
     ['Address', 'adresse'], ['Sex', 'sexe'], ['CNI', 'cni']]],
   ['🗺️ 3. Parcel & Cadastre Details (Parcelle)', false, [
-    ['Plot No', 'plot_no'], ['Arrondissement', 'parcel_arrondissement'], ['Quarter', 'quartier'], ['Lieu-dit', 'lieu_dit'],
+    ['Plot No', 'plot_no'], ['Arrondissement (map)', 'map_commune'], ['Quarter (map)', 'map_quartier'],
+    ['Arrondissement (declared)', 'parcel_arrondissement'], ['Quarter (declared)', 'quartier'], ['Lieu-dit', 'lieu_dit'],
     ['Cadastral Area', 'cadastral_area'], ['Calculated Area', 'parcel_calculated_area', 'm²'],
     ['Land Title No', 'titre_foncier'], ['Parent Title No', 'num_tit_foncier_mere'], ['Lot No', 'num_lot'],
     ['Subdivision (Lotissement)', 'lotissement'], ['Easements (Servitudes)', 'servitudes'], ['Co-Owners', 'co_owners'],
@@ -478,7 +562,7 @@ const SECTIONS = [
     ['Min Parcel Area', 'superficie_parcelle_minimale_m2', 'm²'], ['Prohibited Activities', 'activites_interdites'],
     ['CU Status', 'statut_cu'], ['CU Issue Date', 'date_delivrance'], ['CU Expiry Date', 'date_expiration']]],
   ['🏢 5. Building Permit Details (Permis de Construire)', false, [
-    ['Permit No', 'numero_permis'], ['Arrondissement', 'permit_arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
+    ['Permit No', 'numero_permis'], ['Arrondissement (declared)', 'permit_arrondissement'], ['Arrete No', 'arrete_number'], ['Technical File No', 'technical_file_no'],
     ['Commission Date', 'commission_date'], ['Nature Travaux', 'nature_travaux'], ['Nombre Planchers', 'nombre_planchers'],
     ['Etages Hors-Sol', 'etages_hors_sol'], ['Etages Sous-Sol', 'etages_sous_sol'], ['Building Use', 'usage_bati'],
     ['Parking Places', 'nombre_places_parkings'], ['Height', 'hauteur_construction', 'm'], ['Terrain Area', 'superficie_terrain', 'm²'],
@@ -513,12 +597,20 @@ function showDetails(index) {
   const issues = comp.issuesList.length
     ? comp.issuesList.map(i => `<li style="color:#c0392b;margin:4px 0;">⚠️ ${i}</li>`).join('')
     : `<li style="color:#16a34a;font-weight:bold;list-style:none;">✓ Passed all zoning rules for ${comp.zoneUsed}</li>`;
+  const source = r.map_commune
+    ? `<div class="details-item"><span>Arrondissement source</span>🗺️ Map (parcel location): ${r.map_commune}${r.map_quartier ? ' — ' + r.map_quartier : ''}</div>`
+    : `<div class="details-item"><span>Arrondissement source</span>📝 Typed value (no parcel geometry match)</div>`;
+  const rulesUsed = r.pos
+    ? `<div class="details-item"><span>Rules applied (POS)</span>🏛️ ${r.pos_zone}<br>${r.pos_limits}<br><em>${na(r.pos.status)}</em></div>`
+    : `<div class="details-item"><span>Rules applied</span>📋 Arrondissement table for ${comp.zoneUsed} (no POS zone found for this parcel)</div>`;
 
   $('modal-title').innerText = `Building Permit Details: ${na(r.numero_permis)}`;
   $('modal-body').innerHTML =
     section('📊 Zoning Compliance Diagnosis', `
       <div class="details-item"><span>Status (${comp.zoneUsed})</span><div style="margin-top:4px;">${comp.badgeHTML}</div></div>
-      <div class="details-item"><span>Regulatory Evaluation</span><ul style="padding-left:16px;font-size:13px;">${issues}</ul></div>`, true) +
+      <div class="details-item"><span>Regulatory Evaluation</span><ul style="padding-left:16px;font-size:13px;">${issues}</ul></div>
+      ${source}
+      ${rulesUsed}`, true) +
     section('📐 All Spatial Vertices (EPSG:32632 / UTM Zone 32N)',
       vertexTable(v.parcel, 'Parcel Boundary Vertices') + vertexTable(v.building, 'Building Footprint Vertices'), true) +
     SECTIONS.map(([title, open, fields]) => section(title, fields.map(([l, k, u]) => detailItem(l, r[k], u)).join(''), open)).join('');
@@ -528,7 +620,7 @@ function closeModal() { $('detail-modal').style.display = 'none'; }
 on('detail-modal', 'click', (e) => { if (e.target === $('detail-modal')) closeModal(); });
 
 // ---------- 10. Search & tabs ----------
-const SEARCH_FIELDS = ['name', 'proprietaire_nom', 'numero_permis', 'titre_foncier', 'num_tit_foncier_mere', 'title_rec_no', 'arrondissement', 'nui', 'plot_no', 'cu_number'];
+const SEARCH_FIELDS = ['name', 'proprietaire_nom', 'numero_permis', 'titre_foncier', 'num_tit_foncier_mere', 'title_rec_no', 'arrondissement', 'map_commune', 'map_quartier', 'nui', 'plot_no', 'cu_number'];
 const matches = (r, q) => SEARCH_FIELDS.some(f => r[f] && String(r[f]).toLowerCase().includes(q));
 
 function setTab(tracker) {
@@ -549,7 +641,7 @@ on('search-input', 'input', (e) => {
 });
 
 // ---------- 11. Live GPS navigation ----------
-const navBoard = $('nav-board'), navChip =$('nav-chip'), nbq = (s) => navBoard.querySelector(s);
+const navBoard = $('nav-board'), navChip = $('nav-chip'), nbq = (s) => navBoard.querySelector(s);
 let routing = null, watchId = null, me = null, halo = null, stepMarker = null, route = null, routeCoords = null;
 let following = true, offTrack = false, boardHidden = false, lastRouted = null, lastGeo = null, nav = {};
 
@@ -558,13 +650,14 @@ if (innerWidth > 640) nbq('#nb-dir').open = true;
 
 function setBoard(visible) { boardHidden = !visible; navBoard.style.display = visible && nav.title ? 'block' : 'none'; }
 nbq('.nav-x').onclick = () => setBoard(false);
-$('chip-show').onclick = () => setBoard(boardHidden);$('chip-stop').onclick = () => stopTracking();
+$('chip-show').onclick = () => setBoard(boardHidden);
+$('chip-stop').onclick = () => stopTracking();
 map.on('dragstart', () => { following = false; renderLoc(); });   // user moved the map: stop auto-follow
 
 // Board: current location line
 function renderLoc() {
   nbq('#nb-loc').innerHTML = `<div class="place">📍 ${nav.place || (nav.lat ? 'Locating address…' : 'Locating your live position…')}</div>
-    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} \vert{} UTM${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
+    ${nav.lat ? `<div class="sub">${nav.lat.toFixed(6)}, ${nav.lng.toFixed(6)} | UTM ${nav.utm} (±${nav.acc} m)${following ? '' : ' <a href="#" id="recenter">⌖ recenter</a>'}</div>` : ''}`;
   const rc = nbq('#recenter');
   if (rc) rc.onclick = (e) => { e.preventDefault(); following = true; me && map.panTo(me.getLatLng()); renderLoc(); };
 }
@@ -572,7 +665,7 @@ function renderLoc() {
 // Board: distance / time summary
 function renderSum() {
   const km = nav.dist >= 1000 ? (nav.dist / 1000).toFixed(1) + ' km' : Math.round(nav.dist || 0) + ' m';
-  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} ·${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
+  nbq('#nb-sum').innerHTML = `<div class="big">${nav.dist != null ? `${km} · ${Math.max(1, Math.round(nav.time / 60))} min` : 'Calculating route from your position…'}</div>
     <div class="sub">🎯 ${nav.title || ''}</div>
     ${nav.off ? '<div class="sub" style="color:#dc2626;font-weight:700">⚠️ Off route — recalculating…</div>' : ''}`;
 }
